@@ -348,6 +348,13 @@ def add_derived_time_columns(df: pd.DataFrame) -> pd.DataFrame:
     else:
         working["interval_half_months"] = pd.NA
 
+    asset_candidates = ["Asset ID", "AssetID", "Asset_Id"]
+    asset_col = next((c for c in asset_candidates if c in working.columns), None)
+    if asset_col:
+        working["asset_id_length"] = working[asset_col].astype("string").str.len()
+    else:
+        working["asset_id_length"] = pd.NA
+
     return working
 
 
@@ -458,6 +465,7 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
     exclude_mask = pd.Series([False] * len(working), index=working.index)
     prio_stage = pd.Series(["P3"] * len(working), index=working.index, dtype="string")
     prio_rank = pd.Series([3] * len(working), index=working.index, dtype="int64")
+    shutdown_required = pd.Series([False] * len(working), index=working.index)
 
     for rule in criteria.get("rules", []):
         if not rule.get("active", True):
@@ -517,18 +525,22 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
             prio_rank.loc[upgrade] = target_rank
             prio_stage.loc[upgrade] = target
             rule_col.loc[upgrade] = (rule_col.loc[upgrade] + "; " + rid).str.strip("; ")
+            if bool(rule.get("mark_shutdown", False)):
+                shutdown_required.loc[mask.fillna(False)] = True
 
     excluded = working[exclude_mask].copy()
     excluded["decision_status"] = "excluded"
     excluded["exclude_reasons"] = reason_col.loc[exclude_mask].fillna("")
     excluded["matched_rule_ids"] = rule_col.loc[exclude_mask].fillna("")
     excluded["prio_stage"] = "excluded"
+    excluded["unterbruch_erforderlich"] = shutdown_required.loc[exclude_mask].fillna(False)
 
     included = working[~exclude_mask].copy()
     included["decision_status"] = "in_prio"
     included["exclude_reasons"] = ""
     included["matched_rule_ids"] = rule_col.loc[~exclude_mask].fillna("")
     included["prio_stage"] = prio_stage.loc[~exclude_mask].fillna("P3")
+    included["unterbruch_erforderlich"] = shutdown_required.loc[~exclude_mask].fillna(False)
     return included, excluded
 
 
@@ -1507,7 +1519,7 @@ def render_rule_builder(df: pd.DataFrame) -> None:
     st.markdown("#### Regel-Builder (visuell)")
     st.caption("Neu: beliebig viele Bedingungen je Regel (AND/OR), ohne JSON-Handarbeit.")
 
-    columns = list(df.columns) + ["months_until_due", "months_since_start", "interval_half_months", "months_from_golive"]
+    columns = list(df.columns) + ["months_until_due", "months_since_start", "interval_half_months", "months_from_golive", "asset_id_length"]
     if not columns:
         st.info("Keine Spalten verfügbar.")
         return
@@ -1565,6 +1577,49 @@ def render_rule_builder(df: pd.DataFrame) -> None:
 
 
 
+
+
+def upsert_rule(criteria: Dict[str, Any], rule: Dict[str, Any]) -> None:
+    rid = str(rule.get("id", "")).strip()
+    rules = criteria.setdefault("rules", [])
+    for i, existing in enumerate(rules):
+        if str(existing.get("id", "")).strip() == rid:
+            rules[i] = rule
+            return
+    rules.append(rule)
+
+
+def render_shutdown_override_builder() -> None:
+    st.markdown("#### Übersteuerung: Unterbruch erforderlich")
+    c1, c2, c3 = st.columns([1,1,2])
+    active = c1.checkbox("Aktiv", value=True, key="shutdown_rule_active")
+    min_len = c2.number_input("Asset-ID Länge >", min_value=1, max_value=200, value=34, step=1, key="shutdown_rule_len")
+    priority = c3.selectbox("Prio", ["P1", "P2", "P3"], index=0, key="shutdown_rule_prio")
+
+    st.caption("Logik: Zugänglichkeit != einfach UND Zugänglichkeit != mittel UND asset_id_length > Schwellwert")
+    if st.button("Übersteuerungs-Regel hinzufügen/aktualisieren", key="shutdown_rule_add"):
+        criteria = st.session_state.get("active_criteria_set", default_criteria_set())
+        rule = {
+            "id": "shutdown_override_access_length",
+            "active": bool(active),
+            "action": "assign_prio",
+            "priority": priority,
+            "mark_shutdown": True,
+            "reason": "Nicht einfach/mittel und lange Asset-ID: unterbruchspflichtig",
+            "when": {
+                "op": "AND",
+                "conditions": [
+                    {"op": "!=", "column": "Zugänglichkeit", "value": "einfach"},
+                    {"op": "!=", "column": "Zugänglichkeit", "value": "mittel"},
+                    {"op": ">", "column": "asset_id_length", "value": float(min_len)},
+                ],
+            },
+        }
+        upsert_rule(criteria, rule)
+        st.session_state["active_criteria_set"] = criteria
+        st.success("Übersteuerung übernommen. Danach Kriterien-Version speichern.")
+        st.rerun()
+
 def render_golive_hint() -> None:
     st.markdown("#### Go-Live Regelhilfe")
     ref = st.session_state.get("golive_reference_date", date(2026, 8, 10))
@@ -1574,6 +1629,7 @@ def render_golive_hint() -> None:
 def render_criteria_editor(df: pd.DataFrame) -> None:
     st.markdown("### Kriterien-Set")
     render_golive_hint()
+    render_shutdown_override_builder()
     render_rule_builder(df)
     criteria = st.session_state.get("active_criteria_set", default_criteria_set())
     st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
