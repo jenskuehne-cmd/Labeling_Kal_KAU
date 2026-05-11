@@ -1,141 +1,160 @@
 # Anleitung: Labeling Prio Festlegung
 
-## Start
+## 1) Start
 ```bash
 cd "/Users/kuehnej/Documents/Codex/Labeling_Prio_Festlegung"
 source "/Users/kuehnej/role-dashboard/.venv/bin/activate"
 streamlit run app.py
 ```
 
-## Datenquelle
-In der Sidebar unter `Datenquelle`:
-- vorhandene CSV aus `data/` wählen
-- oder neue CSV hochladen
-- optional dauerhaft speichern
+## 2) Grundprinzip (wichtig)
+Die App hat 3 Ebenen, die getrennt gedacht werden müssen:
 
-## Grundprinzip
-Die App trennt drei Ebenen:
-1. Interaktive Filter (A/B/C) für Exploration.
-2. Kriterien-Sets (versionierbare Regeln) für nachvollziehbare Entscheidungen.
-3. Referenzlisten (z. B. QC-Selbstlabeling) für externe Ausnahmen.
+1. Filteransichten A/B/C
+- Für interaktive Sicht auf Daten (Regex, Kategorien, Zahlen, Datum).
+- Eher für Analyse und Kommunikation.
 
-Damit ist dokumentierbar:
-- was ausgeschlossen wurde
-- warum ausgeschlossen wurde
-- mit welcher Kriterien-Version entschieden wurde
+2. Kriterien-Set (versioniert)
+- Das ist die offizielle Entscheidungslogik.
+- Regeln sind nachvollziehbar und wiederholbar.
 
-## Tabs
-- `Filteransicht A`
-- `Filteransicht B`
-- `Filteransicht C`
-- `Standort-Analyse`
-- `Kriterien`
+3. Referenzlisten (z. B. QC)
+- Externe Ausnahmen, die bewusst und dokumentiert wirken.
 
-## Filteransichten A/B/C
-Jede Ansicht hat eigenen Zustand:
-- Regex-/Kategorien-/Numerik-/Datumsfilter
-- Rule Engine
-- Preset (Name, Bemerkung, Laden/Speichern)
-- manueller Override
+## 3) Was ist „nachvollziehbar“?
+Nachvollziehbar heißt:
+- Welche Version war aktiv (`criteria_sets/*.json`)?
+- Welche Regel hat gegriffen (`matched_rule_ids`)?
+- Warum wurde ausgeschlossen/markiert (`exclude_reasons`, `unterbruch_erforderlich`)?
+- Wie verändert sich das Ergebnis zwischen Versionen?
 
-Zusätzliche Transparenz:
-- Tabelle `Ausgeschlossen durch QC-Regel`
-- Tabelle `Ausgeschlossen durch Kriterien-Set`
+## 4) Standard-Vorgehen pro Runde
 
-In den Ausschlusstabellen sind Regel-IDs und Gründe sichtbar.
+### Schritt A: Daten laden
+- In `Datenquelle` aktuelle CSV wählen oder hochladen.
+- Optional im Projekt speichern (`data/`).
 
-## Presets
-Pro Ansicht:
-- `Filteransicht speichern (JSON)`
-- `Filteransicht laden (JSON)`
+### Schritt B: Kriterien-Version wählen
+- Sidebar `Kriterien > Aktives Kriterien-Set` auswählen.
+- Für neue Runde: auf bestehender Version aufbauen.
 
-Hinweis:
-- Presets speichern Filter-/UI-Zustände.
-- Formale Ausschlusslogik gehört ins Kriterien-Set.
+### Schritt C: Regeln anpassen
+Im Tab `Kriterien`:
+- `Übersteuerung: Unterbruch erforderlich` setzen
+- `Regel-Builder (visuell)` für AND/OR-Ketten nutzen
+- ggf. Tabelle unten für Feinjustierung
 
-## QC-Referenzliste (Excel grün)
-In der Sidebar unter `Referenzlisten > QC-Grünliste (Excel)`:
-1. Excel hochladen
-2. ggf. Farbcode/Asset-Spalte anpassen
-3. `QC-Liste einlesen`
+### Schritt D: Version speichern
+- `Kriterien-Version speichern`
+- sprechender Dateiname, z. B.:
+  - `baseline_v1.json`
+  - `v2_unterbruch_strikt.json`
+  - `v3_due_window_5m.json`
 
-Die grün markierten Zeilen werden über `Asset ID` extrahiert und gespeichert als:
-- `reference_lists/qc_self_labeled_assets.csv`
+### Schritt E: Ergebnis lesen
+In A/B/C:
+- `x von y Zeilen`
+- `Ausgeschlossen durch QC-Regel`
+- `Ausgeschlossen durch Kriterien-Set`
+- `Prioritätsstufen (aus Kriterien-Set)`
+- Spalten: `prio_stage`, `prio_substage`, `unterbruch_erforderlich`
 
-Diese Liste wird beim nächsten App-Start automatisch geladen.
+## 5) Konkrete Regelbeispiele
 
-## Kriterien-Sets (versionierbar)
-In der Sidebar unter `Kriterien`:
-- aktives Kriterien-Set auswählen
-- im Block `Live-Kriterien` die wichtigsten Regeln direkt live anpassen
-  - `Intervall > (Monate)`
-  - `Asset ID Länge <`
-  - `QC-Selbstlabeling`
-  - inkl. sichtbarer Trefferzahl pro Regel
+### Beispiel 1: Go-Live-Fenster
+Ziel: Intervall < 12 und Due-Date in 0..5 Monaten nach Go-Live.
 
-Im Reiter `Kriterien`:
-1. `Regel-Builder (visuell)` nutzen (1-8 Bedingungen + AND/OR) und Regel hinzufügen
-2. optional Regeln in der Tabelle feinbearbeiten
-3. neue Version speichern (`Kriterien-Version speichern`)
-4. Datei wird in `criteria_sets/` abgelegt
+Vorher:
+- Sidebar `Kriterien > Go-Live Referenzdatum` setzen (z. B. `2026-08-10`).
 
-Unterstützte Regeltypen (Legacy):
-- `numeric_gt`
-- `string_length_lt`
-- `regex_match`
-- `date_between`
-- `ref_list_match`
-
-Zusätzlich: Bedingungsblöcke mit `when`:
-- `op: AND` / `OR` / `NOT`
-- Vergleiche: `>`, `>=`, `<`, `<=`, `==`, `!=`
-- Felder: `column`, `value` oder `value_col`
-
-Unterstützte Aktionen:
-- `exclude_from_prio`
-- `assign_prio` mit `priority: P1|P2|P3`
-
-Beispiel (dein Use-Case):
-- Bedingung 1: `Interval > 7`
-- Bedingung 2: `months_until_due <= interval_half_months`
-- Verknüpfung: `AND`
-- Aktion: `assign_prio`, Prio `P2`
-
-## Prioritätsstufen
-Wenn Kriterien mit `assign_prio` aktiv sind:
-- Ergebnis enthält Spalte `prio_stage` (`P1`, `P2`, `P3`)
-- In jeder Filteransicht wird `Prioritätsstufen (aus Kriterien-Set)` als Summen-Tabelle angezeigt
-- Exkludierte Zeilen bleiben in `Ausgeschlossen durch Kriterien-Set` mit Begründung sichtbar
-
-## Summen und Details
-In jeder Filteransicht:
-- Summenanzeige nach Gruppe
-- Gruppendetails mit auswählbaren Spalten
-
-In `Standort-Analyse`:
-- Zugänglichkeit per Regex/Leer filtern
-- Standort-Basis bilden
-- Detail- und Rohdatenansicht
-
-## Export
-Je Filteransicht:
-- `CSV exportieren`
-- `CSV + Filter (ZIP)` mit Filterzustand als JSON
-
-In `Standort-Analyse`:
-- CSV-Export
-- ZIP-Export mit Filterzustand
-
-- Im Builder steuerst du über `Anzahl Bedingungen`, wie viele Einzelkriterien die Regel enthält.
-
-## Go-Live Bezug
-- In der Sidebar unter `Kriterien` setzt du `Go-Live Referenzdatum` (z. B. `2026-08-10`).
-- Die App erzeugt daraus die Kennzahl `months_from_golive` auf Basis der Due-Date-Spalte.
-- Positiv bedeutet: Due-Date liegt nach Go-Live.
-
-Für den Fall „Intervall < 12 und Due-Date kommt nach Go-Live innerhalb 5 Monate“:
+Regel im Builder:
 - Bedingung 1: `Interval < 12`
 - Bedingung 2: `months_from_golive >= 0`
 - Bedingung 3: `months_from_golive <= 5`
 - Verknüpfung: `AND`
+- Aktion: `assign_prio`
+- Prio: z. B. `P2`
 
+### Beispiel 2: Unterbruchspflicht (dein Fall)
+Ziel: Alles außer `einfach`/`mittel` soll Unterbruch bekommen.
+
+In `Übersteuerung: Unterbruch erforderlich`:
+- `Kein Unterbruch für diese Werte` = `einfach`, `mittel`
+- `Mit Asset-ID-Länge` = aus (wenn Länge egal sein soll)
+- Prio = `P1`
+- Sub-Prio = `1A`
+- `Übersteuerungs-Regel hinzufügen/aktualisieren`
+
+Ergebnis:
+- `unterbruch_erforderlich = True`
+- `prio_stage = P1`
+- `prio_substage = 1A`
+
+### Beispiel 3: Unterbruch nur bei langen IDs (optional)
+Wie Beispiel 2, aber:
+- `Mit Asset-ID-Länge` = an
+- Schwellwert setzen (z. B. `>34`)
+
+## 6) A/B/C sinnvoll für 3 Teams/Varianten nutzen
+Empfehlung:
+- A = Baseline
+- B = Variante „streng“
+- C = Variante „operativ“
+
+Pro Ansicht:
+- Filter nur für diese Ansicht setzen
+- Preset speichern (`Filteransicht speichern (JSON)`)
+- CSV + ZIP exportieren
+
+Wichtig:
+- Filter-Presets sind UI/Analyse-Zustand.
+- Entscheidungslogik liegt im Kriterien-Set.
+
+## 7) Unterschiede zwischen Versionen nachvollziehen
+Praktischer Ablauf:
+
+1. Version 1 aktivieren (`baseline_v1.json`), Ergebnis exportieren.
+2. Version 2 aktivieren, Ergebnis exportieren.
+3. Vergleich über:
+- Anzahl Zeilen in Prio
+- Tabelle `Ausgeschlossen durch Kriterien-Set`
+- Verteilung `prio_stage` / `prio_substage`
+- Summenanzeigen nach Bereich/Standort
+
+Zusatzempfehlung:
+- Im Dateinamen Ziel und Annahme kodieren, z. B.:
+  - `v4_no_easy_medium_shutdown.json`
+  - `v5_shutdown_with_len34.json`
+
+## 8) Gedankengang dokumentieren (für Dritte)
+Für jede neue Kriterien-Version kurz festhalten:
+- Hypothese: Was soll diese Version verbessern?
+- Regeländerung: Was wurde konkret geändert?
+- Erwarteter Effekt: Mehr/weniger Zeilen, welche Gruppen betroffen?
+- Ergebnis: Was ist tatsächlich passiert?
+- Entscheidung: Übernehmen / Verwerfen / Nächste Iteration
+
+Das kann in:
+- `To Do und vorgehen Logik.md`
+- oder separater `runs/` Notiz je Runde
+
+## 9) Typische Stolperfallen
+- Oben im Builder wird nicht automatisch die komplette Tabelle unten „rückwärts geladen“: Builder ist primär Erzeugung/Update.
+- Nach Regeländerung immer klicken:
+  - `Übersteuerungs-Regel hinzufügen/aktualisieren` oder `Regel ... hinzufügen`
+  - danach `Kriterien-Version speichern`
+- Wenn Wirkung fehlt: prüfen, ob richtiges `Aktives Kriterien-Set` gewählt ist.
+
+## 10) Export
+Pro Filteransicht:
+- CSV
+- ZIP (CSV + Filterzustand)
+
+Standort-Analyse:
+- CSV
+- ZIP
+
+Für Freigabe/Review immer beilegen:
+- verwendete CSV-Version
+- Kriterien-Set-Dateiname
+- Exportdatum
