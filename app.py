@@ -464,6 +464,7 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
     rule_col = pd.Series([""] * len(working), index=working.index, dtype="string")
     exclude_mask = pd.Series([False] * len(working), index=working.index)
     prio_stage = pd.Series(["P3"] * len(working), index=working.index, dtype="string")
+    prio_substage = pd.Series(["" ] * len(working), index=working.index, dtype="string")
     prio_rank = pd.Series([3] * len(working), index=working.index, dtype="int64")
     shutdown_required = pd.Series([False] * len(working), index=working.index)
 
@@ -527,12 +528,16 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
             rule_col.loc[upgrade] = (rule_col.loc[upgrade] + "; " + rid).str.strip("; ")
             if bool(rule.get("mark_shutdown", False)):
                 shutdown_required.loc[mask.fillna(False)] = True
+            substage = str(rule.get("priority_substage", "")).strip()
+            if substage:
+                prio_substage.loc[mask.fillna(False)] = substage
 
     excluded = working[exclude_mask].copy()
     excluded["decision_status"] = "excluded"
     excluded["exclude_reasons"] = reason_col.loc[exclude_mask].fillna("")
     excluded["matched_rule_ids"] = rule_col.loc[exclude_mask].fillna("")
     excluded["prio_stage"] = "excluded"
+    excluded["prio_substage"] = ""
     excluded["unterbruch_erforderlich"] = shutdown_required.loc[exclude_mask].fillna(False)
 
     included = working[~exclude_mask].copy()
@@ -540,6 +545,7 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
     included["exclude_reasons"] = ""
     included["matched_rule_ids"] = rule_col.loc[~exclude_mask].fillna("")
     included["prio_stage"] = prio_stage.loc[~exclude_mask].fillna("P3")
+    included["prio_substage"] = prio_substage.loc[~exclude_mask].fillna("")
     included["unterbruch_erforderlich"] = shutdown_required.loc[~exclude_mask].fillna(False)
     return included, excluded
 
@@ -1589,31 +1595,65 @@ def upsert_rule(criteria: Dict[str, Any], rule: Dict[str, Any]) -> None:
     rules.append(rule)
 
 
-def render_shutdown_override_builder() -> None:
+def render_shutdown_override_builder(df: pd.DataFrame) -> None:
     st.markdown("#### Übersteuerung: Unterbruch erforderlich")
-    c1, c2, c3 = st.columns([1,1,2])
+    c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
     active = c1.checkbox("Aktiv", value=True, key="shutdown_rule_active")
-    min_len = c2.number_input("Asset-ID Länge >", min_value=1, max_value=200, value=34, step=1, key="shutdown_rule_len")
+    use_len = c2.checkbox("Mit Asset-ID-Länge", value=False, key="shutdown_rule_use_len")
     priority = c3.selectbox("Prio", ["P1", "P2", "P3"], index=0, key="shutdown_rule_prio")
+    substage = c4.text_input("Sub-Prio", value="1A", key="shutdown_rule_substage")
 
-    st.caption("Logik: Zugänglichkeit != einfach UND Zugänglichkeit != mittel UND asset_id_length > Schwellwert")
+    access_col = "Zugänglichkeit" if "Zugänglichkeit" in df.columns else None
+    default_normal = ["einfach", "mittel"]
+    normal_values = default_normal
+    if access_col:
+        existing = sorted(df[access_col].dropna().astype("string").str.strip().unique().tolist())
+        preselect = [v for v in default_normal if v in existing]
+        if not preselect and existing:
+            preselect = existing[:2]
+        normal_values = st.multiselect(
+            "Kein Unterbruch für diese Werte",
+            options=existing,
+            default=preselect,
+            key="shutdown_rule_normal_values",
+        )
+
+    min_len = 34
+    if use_len:
+        min_len = st.number_input("Asset-ID Länge >", min_value=1, max_value=200, value=34, step=1, key="shutdown_rule_len")
+
+    logic_txt = "Unterbruch erforderlich, wenn Zugänglichkeit NICHT in [Kein Unterbruch für diese Werte]"
+    if use_len:
+        logic_txt += " UND asset_id_length > Schwellwert"
+    st.caption(f"Logik: {logic_txt}")
+
     if st.button("Übersteuerungs-Regel hinzufügen/aktualisieren", key="shutdown_rule_add"):
+        if not access_col:
+            st.error("Spalte 'Zugänglichkeit' wurde nicht gefunden.")
+            return
+        if not normal_values:
+            st.error("Bitte mindestens einen normalen Zugänglichkeitswert wählen.")
+            return
+
         criteria = st.session_state.get("active_criteria_set", default_criteria_set())
+        conditions = []
+        for v in normal_values:
+            conditions.append({"op": "!=", "column": "Zugänglichkeit", "value": str(v)})
+
+        reason = f"Zugänglichkeit nicht in {normal_values}: unterbruchspflichtig"
+        if use_len:
+            conditions.append({"op": ">", "column": "asset_id_length", "value": float(min_len)})
+            reason += " (mit Mindestlänge Asset-ID)"
+
         rule = {
-            "id": "shutdown_override_access_length",
+            "id": "shutdown_override_access",
             "active": bool(active),
             "action": "assign_prio",
             "priority": priority,
+            "priority_substage": str(substage).strip(),
             "mark_shutdown": True,
-            "reason": "Nicht einfach/mittel und lange Asset-ID: unterbruchspflichtig",
-            "when": {
-                "op": "AND",
-                "conditions": [
-                    {"op": "!=", "column": "Zugänglichkeit", "value": "einfach"},
-                    {"op": "!=", "column": "Zugänglichkeit", "value": "mittel"},
-                    {"op": ">", "column": "asset_id_length", "value": float(min_len)},
-                ],
-            },
+            "reason": reason,
+            "when": {"op": "AND", "conditions": conditions},
         }
         upsert_rule(criteria, rule)
         st.session_state["active_criteria_set"] = criteria
@@ -1629,7 +1669,7 @@ def render_golive_hint() -> None:
 def render_criteria_editor(df: pd.DataFrame) -> None:
     st.markdown("### Kriterien-Set")
     render_golive_hint()
-    render_shutdown_override_builder()
+    render_shutdown_override_builder(df)
     render_rule_builder(df)
     criteria = st.session_state.get("active_criteria_set", default_criteria_set())
     st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
@@ -1741,9 +1781,11 @@ def main() -> None:
     )
 
     st.sidebar.header("Kriterien")
-    st.session_state["golive_reference_date"] = st.sidebar.date_input(
+    if "golive_reference_date" not in st.session_state:
+        st.session_state["golive_reference_date"] = date(2026, 8, 10)
+    st.sidebar.date_input(
         "Go-Live Referenzdatum",
-        value=st.session_state.get("golive_reference_date", date(2026, 8, 10)),
+        value=st.session_state["golive_reference_date"],
         key="golive_reference_date",
         help="Wird für die abgeleitete Kennzahl months_from_golive verwendet.",
     )
