@@ -176,3 +176,25 @@ Damit kannst du für Dritte transparent zeigen:
 - was sich geändert hat
 - wie stark es sich geändert hat
 - welche konkreten Messstellen betroffen sind
+
+
+## 12) Bedeutet `assign_prio` Ausschluss?
+Nein.
+
+- `assign_prio`:
+  - Zeile bleibt in der Liste (`in_prio`).
+  - Es werden nur Markierungen gesetzt, z. B.:
+    - `prio_stage` (P1/P2/P3)
+    - `prio_substage` (z. B. 1A)
+    - `unterbruch_erforderlich`
+
+- `exclude_from_prio`:
+  - Zeile fliegt aus der aktiven Prio-Liste raus.
+  - Zeile erscheint in `Ausgeschlossen durch Kriterien-Set` mit Grund.
+
+Merksatz:
+- `assign_prio` = "drin lassen und einstufen"
+- `exclude_from_prio` = "rausnehmen"
+
+Prüfhinweis:
+Wenn sich nur Prio-Markierungen ändern, bleibt die Zeilenanzahl gleich. Das ist korrekt.

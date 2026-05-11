@@ -1585,7 +1585,7 @@ def build_condition_preview(cond: Dict[str, Any]) -> str:
 
 def render_rule_builder(df: pd.DataFrame) -> None:
     st.markdown("#### Regel-Builder (visuell)")
-    st.caption("Neu: beliebig viele Bedingungen je Regel (AND/OR), ohne JSON-Handarbeit.")
+    st.caption("Neu: beliebig viele Bedingungen je Regel (AND/OR), inkl. REGEX und optionalem NOT.")
 
     columns = list(df.columns) + ["months_until_due", "months_since_start", "interval_half_months", "months_from_golive", "asset_id_length"]
     if not columns:
@@ -1599,24 +1599,32 @@ def render_rule_builder(df: pd.DataFrame) -> None:
 
     count = st.number_input("Anzahl Bedingungen", min_value=1, max_value=8, value=3, step=1, key="rb_cond_count")
     conditions = []
-    operators = [">", ">=", "<", "<=", "==", "!="]
+    operators = [">", ">=", "<", "<=", "==", "!=", "REGEX"]
 
     for i in range(int(count)):
         with st.expander(f"Bedingung {i+1}", expanded=(i < 2)):
-            a1, a2, a3, a4 = st.columns([2, 1, 1, 2])
+            a0, a1, a2, a3, a4 = st.columns([1, 2, 1, 1, 2])
+            negate = a0.checkbox("NOT", value=False, key=f"rb_not_{i}")
             col = a1.selectbox("Spalte", columns, key=f"rb_col_{i}")
             op = a2.selectbox("Operator", operators, key=f"rb_op_{i}")
-            mode = a3.selectbox("Werttyp", ["Konstante", "Spalte"], key=f"rb_mode_{i}")
-            if mode == "Konstante":
-                raw_val = a4.text_input("Wert", value="0", key=f"rb_val_{i}")
-                try:
-                    val = float(raw_val)
-                except Exception:
-                    val = raw_val
-                cond = {"op": op, "column": col, "value": val}
+
+            if op == "REGEX":
+                pattern = a4.text_input("Regex", value="", key=f"rb_regex_{i}")
+                cond_core = {"op": "REGEX", "column": col, "pattern": pattern}
             else:
-                val_col = a4.selectbox("Vergleichsspalte", columns, key=f"rb_val_col_{i}")
-                cond = {"op": op, "column": col, "value_col": val_col}
+                mode = a3.selectbox("Werttyp", ["Konstante", "Spalte"], key=f"rb_mode_{i}")
+                if mode == "Konstante":
+                    raw_val = a4.text_input("Wert", value="0", key=f"rb_val_{i}")
+                    try:
+                        val = float(raw_val)
+                    except Exception:
+                        val = raw_val
+                    cond_core = {"op": op, "column": col, "value": val}
+                else:
+                    val_col = a4.selectbox("Vergleichsspalte", columns, key=f"rb_val_col_{i}")
+                    cond_core = {"op": op, "column": col, "value_col": val_col}
+
+            cond = {"op": "NOT", "condition": cond_core} if negate else cond_core
             conditions.append(cond)
 
     rule_id = st.text_input("Regel-ID", value=f"rule_{datetime.now().strftime('%H%M%S')}", key="rb_id")
@@ -1637,30 +1645,10 @@ def render_rule_builder(df: pd.DataFrame) -> None:
         }
         if action == "assign_prio":
             new_rule["priority"] = priority
-        criteria.setdefault("rules", []).append(new_rule)
+        upsert_rule(criteria, new_rule)
         st.session_state["active_criteria_set"] = criteria
-        st.success("Regel hinzugefügt. Jetzt unten 'Kriterien-Version speichern' klicken.")
+        st.success("Regel hinzugefügt/aktualisiert. Jetzt unten 'Kriterien-Version speichern' klicken.")
         st.rerun()
-
-
-
-
-
-
-def upsert_rule(criteria: Dict[str, Any], rule: Dict[str, Any]) -> None:
-    rid = str(rule.get("id", "")).strip()
-    rules = criteria.setdefault("rules", [])
-    for i, existing in enumerate(rules):
-        if str(existing.get("id", "")).strip() == rid:
-            rules[i] = rule
-            return
-    rules.append(rule)
-
-
-def delete_rule_by_id(criteria: Dict[str, Any], rule_id: str) -> None:
-    rules = criteria.get("rules", [])
-    criteria["rules"] = [r for r in rules if str(r.get("id", "")).strip() != str(rule_id).strip()]
-
 
 
 
@@ -1739,76 +1727,12 @@ def render_prio34_shutdown_recipe(df: pd.DataFrame) -> None:
         st.success("Rezept-/Unterbruch-Regeln entfernt. Danach Kriterien-Version speichern.")
         st.rerun()
 
-def render_shutdown_override_builder(df: pd.DataFrame) -> None:
-    st.markdown("#### Übersteuerung: Unterbruch erforderlich")
-    c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
-    active = c1.checkbox("Aktiv", value=True, key="shutdown_rule_active")
-    use_len = c2.checkbox("Mit Asset-ID-Länge", value=False, key="shutdown_rule_use_len")
-    priority = c3.selectbox("Prio", ["P1", "P2", "P3"], index=0, key="shutdown_rule_prio")
-    substage = c4.text_input("Sub-Prio", value="1A", key="shutdown_rule_substage")
-
-    access_col = find_column_by_candidates(df, ["Zugänglichkeit", "Zugaenglichkeit", "Accessibility"])
-    default_normal = ["einfach", "mittel"]
-    normal_values = default_normal
-    if access_col:
-        existing = sorted(df[access_col].dropna().astype("string").str.strip().unique().tolist())
-        preselect = [v for v in default_normal if v in existing]
-        if not preselect and existing:
-            preselect = existing[:2]
-        normal_values = st.multiselect(
-            "Kein Unterbruch für diese Werte",
-            options=existing,
-            default=preselect,
-            key="shutdown_rule_normal_values",
-        )
-
-    min_len = 34
-    if use_len:
-        min_len = st.number_input("Asset-ID Länge >", min_value=1, max_value=200, value=34, step=1, key="shutdown_rule_len")
-
-    logic_txt = "Unterbruch erforderlich, wenn Zugänglichkeit NICHT in [Kein Unterbruch für diese Werte]"
-    if use_len:
-        logic_txt += " UND asset_id_length > Schwellwert"
-    st.caption(f"Logik: {logic_txt}")
-
-    if st.button("Übersteuerungs-Regel hinzufügen/aktualisieren", key="shutdown_rule_add"):
-        if not access_col:
-            st.error("Spalte 'Zugänglichkeit' wurde nicht gefunden.")
-            return
-        if not normal_values:
-            st.error("Bitte mindestens einen normalen Zugänglichkeitswert wählen.")
-            return
-
-        criteria = st.session_state.get("active_criteria_set", default_criteria_set())
-        conditions = []
-        for v in normal_values:
-            conditions.append({"op": "!=", "column": access_col, "value": str(v)})
-
-        reason = f"Zugänglichkeit nicht in {normal_values}: unterbruchspflichtig"
-        if use_len:
-            conditions.append({"op": ">", "column": "asset_id_length", "value": float(min_len)})
-            reason += " (mit Mindestlänge Asset-ID)"
-
-        rule = {
-            "id": "shutdown_override_access",
-            "active": bool(active),
-            "action": "assign_prio",
-            "priority": priority,
-            "priority_substage": str(substage).strip(),
-            "mark_shutdown": True,
-            "reason": reason,
-            "when": {"op": "AND", "conditions": conditions},
-        }
-        upsert_rule(criteria, rule)
-        st.session_state["active_criteria_set"] = criteria
-        st.success("Übersteuerung übernommen. Danach Kriterien-Version speichern.")
-        st.rerun()
-
 def render_golive_hint() -> None:
     st.markdown("#### Go-Live Regelhilfe")
     ref = st.session_state.get("golive_reference_date", date(2026, 8, 10))
     st.caption(f"Aktuelles Go-Live Referenzdatum: {ref.isoformat()}")
     st.caption("Für deinen Fall im Builder setzen: Interval < 12 UND months_from_golive >= 0 UND months_from_golive <= 5")
+
 
 def render_criteria_editor(df: pd.DataFrame) -> None:
     st.markdown("### Kriterien-Set")
