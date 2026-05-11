@@ -74,7 +74,7 @@ In der Sidebar unter `Kriterien`:
   - inkl. sichtbarer Trefferzahl pro Regel
 
 Im Reiter `Kriterien`:
-1. `Regel-Builder (visuell)` nutzen (2 Bedingungen + AND/OR) und Regel hinzufügen
+1. `Regel-Builder (visuell)` nutzen (1-8 Bedingungen + AND/OR) und Regel hinzufügen
 2. optional Regeln in der Tabelle feinbearbeiten
 3. neue Version speichern (`Kriterien-Version speichern`)
 4. Datei wird in `criteria_sets/` abgelegt
@@ -125,3 +125,5 @@ Je Filteransicht:
 In `Standort-Analyse`:
 - CSV-Export
 - ZIP-Export mit Filterzustand
+
+- Im Builder steuerst du über `Anzahl Bedingungen`, wie viele Einzelkriterien die Regel enthält.

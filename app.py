@@ -1501,55 +1501,46 @@ def build_condition_preview(cond: Dict[str, Any]) -> str:
 
 def render_rule_builder(df: pd.DataFrame) -> None:
     st.markdown("#### Regel-Builder (visuell)")
+    st.caption("Neu: beliebig viele Bedingungen je Regel (AND/OR), ohne JSON-Handarbeit.")
+
     columns = list(df.columns) + ["months_until_due", "months_since_start", "interval_half_months"]
-    default_cols = [c for c in ["Interval", "Asset ID", "Due Date BMRAM / End Datum SAP"] if c in columns]
-    if not default_cols:
-        default_cols = columns[:1]
+    if not columns:
+        st.info("Keine Spalten verfügbar.")
+        return
 
     c1, c2, c3 = st.columns([1, 1, 1])
     action = c1.selectbox("Aktion", ["exclude_from_prio", "assign_prio"], key="rb_action")
     priority = c2.selectbox("Prio (bei assign)", ["P1", "P2", "P3"], key="rb_priority")
     logic = c3.selectbox("Verknüpfung", ["AND", "OR"], key="rb_logic")
 
-    st.markdown("Bedingung 1")
-    a1, a2, a3, a4 = st.columns([2, 1, 1, 2])
-    c1_col = a1.selectbox("Spalte", columns, index=columns.index(default_cols[0]), key="rb_c1_col")
-    c1_op = a2.selectbox("Operator", [">", ">=", "<", "<=", "==", "!="], key="rb_c1_op")
-    c1_mode = a3.selectbox("Werttyp", ["Konstante", "Spalte"], key="rb_c1_mode")
-    c1_val = a4.text_input("Wert", value="10", key="rb_c1_val") if c1_mode == "Konstante" else a4.selectbox("Vergleichsspalte", columns, key="rb_c1_val_col")
+    count = st.number_input("Anzahl Bedingungen", min_value=1, max_value=8, value=3, step=1, key="rb_cond_count")
+    conditions = []
+    operators = [">", ">=", "<", "<=", "==", "!="]
 
-    st.markdown("Bedingung 2")
-    b1, b2, b3, b4 = st.columns([2, 1, 1, 2])
-    c2_col = b1.selectbox("Spalte ", columns, index=columns.index(default_cols[-1]), key="rb_c2_col")
-    c2_op = b2.selectbox("Operator ", [">", ">=", "<", "<=", "==", "!="], key="rb_c2_op")
-    c2_mode = b3.selectbox("Werttyp ", ["Konstante", "Spalte"], key="rb_c2_mode")
-    c2_val = b4.text_input("Wert ", value="1", key="rb_c2_val") if c2_mode == "Konstante" else b4.selectbox("Vergleichsspalte ", columns, key="rb_c2_val_col")
+    for i in range(int(count)):
+        with st.expander(f"Bedingung {i+1}", expanded=(i < 2)):
+            a1, a2, a3, a4 = st.columns([2, 1, 1, 2])
+            col = a1.selectbox("Spalte", columns, key=f"rb_col_{i}")
+            op = a2.selectbox("Operator", operators, key=f"rb_op_{i}")
+            mode = a3.selectbox("Werttyp", ["Konstante", "Spalte"], key=f"rb_mode_{i}")
+            if mode == "Konstante":
+                raw_val = a4.text_input("Wert", value="0", key=f"rb_val_{i}")
+                try:
+                    val = float(raw_val)
+                except Exception:
+                    val = raw_val
+                cond = {"op": op, "column": col, "value": val}
+            else:
+                val_col = a4.selectbox("Vergleichsspalte", columns, key=f"rb_val_col_{i}")
+                cond = {"op": op, "column": col, "value_col": val_col}
+            conditions.append(cond)
 
     rule_id = st.text_input("Regel-ID", value=f"rule_{datetime.now().strftime('%H%M%S')}", key="rb_id")
     reason = st.text_input("Begründung", value="Manuell erstellte Regel", key="rb_reason")
 
-    cond1 = {"op": c1_op, "column": c1_col}
-    cond2 = {"op": c2_op, "column": c2_col}
-
-    def parse_const(v: str):
-        try:
-            return float(v)
-        except Exception:
-            return v
-
-    if c1_mode == "Konstante":
-        cond1["value"] = parse_const(c1_val)
-    else:
-        cond1["value_col"] = c1_val
-
-    if c2_mode == "Konstante":
-        cond2["value"] = parse_const(c2_val)
-    else:
-        cond2["value_col"] = c2_val
-
-    when = {"op": logic, "conditions": [cond1, cond2]}
-    preview = build_condition_preview(when)
-    st.caption(f"Vorschau: {preview}")
+    when = {"op": logic, "conditions": conditions}
+    st.code(json.dumps(when, ensure_ascii=False, indent=2), language="json")
+    st.caption(f"Vorschau: {build_condition_preview(when)}")
 
     if st.button("Regel zum aktiven Kriterien-Set hinzufügen", key="rb_add"):
         criteria = st.session_state.get("active_criteria_set", default_criteria_set())
@@ -1570,6 +1561,7 @@ def render_rule_builder(df: pd.DataFrame) -> None:
 
 def render_criteria_editor(df: pd.DataFrame) -> None:
     st.markdown("### Kriterien-Set")
+    render_rule_builder(df)
     criteria = st.session_state.get("active_criteria_set", default_criteria_set())
     st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
     st.text_area("Notizen", value=str(criteria.get("notes", "")), key="criteria_notes")
