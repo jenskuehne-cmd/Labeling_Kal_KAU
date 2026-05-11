@@ -127,3 +127,15 @@ In `Standort-Analyse`:
 - ZIP-Export mit Filterzustand
 
 - Im Builder steuerst du über `Anzahl Bedingungen`, wie viele Einzelkriterien die Regel enthält.
+
+## Go-Live Bezug
+- In der Sidebar unter `Kriterien` setzt du `Go-Live Referenzdatum` (z. B. `2026-08-10`).
+- Die App erzeugt daraus die Kennzahl `months_from_golive` auf Basis der Due-Date-Spalte.
+- Positiv bedeutet: Due-Date liegt nach Go-Live.
+
+Für den Fall „Intervall < 12 und Due-Date kommt nach Go-Live innerhalb 5 Monate“:
+- Bedingung 1: `Interval < 12`
+- Bedingung 2: `months_from_golive >= 0`
+- Bedingung 3: `months_from_golive <= 5`
+- Verknüpfung: `AND`
+

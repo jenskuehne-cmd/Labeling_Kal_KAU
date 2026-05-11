@@ -325,12 +325,16 @@ def add_derived_time_columns(df: pd.DataFrame) -> pd.DataFrame:
     interval_col = next((c for c in interval_candidates if c in working.columns), None)
 
     today = pd.Timestamp.today().normalize()
+    golive_ref = st.session_state.get("golive_reference_date", date(2026, 8, 10))
+    golive_ts = pd.Timestamp(golive_ref)
 
     if due_col:
         due_dt = pd.to_datetime(working[due_col], errors="coerce", dayfirst=True)
         working["months_until_due"] = (due_dt - today).dt.days / 30.4375
+        working["months_from_golive"] = (due_dt - golive_ts).dt.days / 30.4375
     else:
         working["months_until_due"] = pd.NA
+        working["months_from_golive"] = pd.NA
 
     if start_col:
         start_dt = pd.to_datetime(working[start_col], errors="coerce", dayfirst=True)
@@ -1503,7 +1507,7 @@ def render_rule_builder(df: pd.DataFrame) -> None:
     st.markdown("#### Regel-Builder (visuell)")
     st.caption("Neu: beliebig viele Bedingungen je Regel (AND/OR), ohne JSON-Handarbeit.")
 
-    columns = list(df.columns) + ["months_until_due", "months_since_start", "interval_half_months"]
+    columns = list(df.columns) + ["months_until_due", "months_since_start", "interval_half_months", "months_from_golive"]
     if not columns:
         st.info("Keine Spalten verfügbar.")
         return
@@ -1559,8 +1563,17 @@ def render_rule_builder(df: pd.DataFrame) -> None:
         st.rerun()
 
 
+
+
+def render_golive_hint() -> None:
+    st.markdown("#### Go-Live Regelhilfe")
+    ref = st.session_state.get("golive_reference_date", date(2026, 8, 10))
+    st.caption(f"Aktuelles Go-Live Referenzdatum: {ref.isoformat()}")
+    st.caption("Für deinen Fall im Builder setzen: Interval < 12 UND months_from_golive >= 0 UND months_from_golive <= 5")
+
 def render_criteria_editor(df: pd.DataFrame) -> None:
     st.markdown("### Kriterien-Set")
+    render_golive_hint()
     render_rule_builder(df)
     criteria = st.session_state.get("active_criteria_set", default_criteria_set())
     st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
@@ -1672,6 +1685,12 @@ def main() -> None:
     )
 
     st.sidebar.header("Kriterien")
+    st.session_state["golive_reference_date"] = st.sidebar.date_input(
+        "Go-Live Referenzdatum",
+        value=st.session_state.get("golive_reference_date", date(2026, 8, 10)),
+        key="golive_reference_date",
+        help="Wird für die abgeleitete Kennzahl months_from_golive verwendet.",
+    )
     criteria_files = list_criteria_sets()
     if criteria_files:
         options = {p.name: str(p) for p in criteria_files}
