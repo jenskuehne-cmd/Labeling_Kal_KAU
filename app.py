@@ -8,6 +8,7 @@ import zipfile
 
 import pandas as pd
 import streamlit as st
+from openpyxl import load_workbook
 
 
 st.set_page_config(page_title="KAU Relabeling Priorisierung", layout="wide")
@@ -15,6 +16,12 @@ st.set_page_config(page_title="KAU Relabeling Priorisierung", layout="wide")
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+REF_DIR = BASE_DIR / "reference_lists"
+REF_DIR.mkdir(parents=True, exist_ok=True)
+CRITERIA_DIR = BASE_DIR / "criteria_sets"
+CRITERIA_DIR.mkdir(parents=True, exist_ok=True)
+RUNS_DIR = BASE_DIR / "runs"
+RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def apply_custom_style() -> None:
@@ -30,6 +37,19 @@ def apply_custom_style() -> None:
         }
         h1, h2, h3, h4, h5, h6, p, label, span, div {
             color: #e8efff;
+        }
+        /* Narrow, denser table typography */
+        .stDataFrame, .stDataEditor {
+            font-family: "Arial Narrow", "Aptos Narrow", "Liberation Sans Narrow", "Noto Sans", sans-serif !important;
+            font-size: 12px !important;
+        }
+        .stDataFrame [role="columnheader"],
+        .stDataFrame [role="gridcell"],
+        .stDataEditor [role="columnheader"],
+        .stDataEditor [role="gridcell"] {
+            font-family: "Arial Narrow", "Aptos Narrow", "Liberation Sans Narrow", "Noto Sans", sans-serif !important;
+            font-size: 12px !important;
+            line-height: 1.15 !important;
         }
         </style>
         """,
@@ -60,40 +80,24 @@ def short_label(name: str, max_len: int = 24) -> str:
     return name[: max_len - 3] + "..."
 
 
-def infer_col_width(series: pd.Series, name: str) -> str:
-    if pd.api.types.is_bool_dtype(series):
-        return "small"
-    if pd.api.types.is_numeric_dtype(series):
-        return "small"
-    sample = series.dropna().astype(str).head(80)
-    max_len = max([len(name)] + ([sample.str.len().max()] if not sample.empty else [0]))
-    if max_len <= 14:
-        return "small"
-    if max_len <= 35:
-        return "medium"
-    return "large"
-
-
 def build_column_config(df: pd.DataFrame, allow_manual_edit: bool) -> Dict[str, Any]:
     config: Dict[str, Any] = {}
     for col in df.columns:
         label = short_label(col)
-        width = infer_col_width(df[col], col)
         if col == "prio_manual":
             config[col] = st.column_config.SelectboxColumn(
                 label=label,
                 options=["", "Low", "Medium", "High"],
                 help=col,
-                width=width,
             )
         elif col == "prio_note":
-            config[col] = st.column_config.TextColumn(label=label, help=col, width="large")
+            config[col] = st.column_config.TextColumn(label=label, help=col)
         elif pd.api.types.is_bool_dtype(df[col]):
-            config[col] = st.column_config.CheckboxColumn(label=label, help=col, width=width)
+            config[col] = st.column_config.CheckboxColumn(label=label, help=col)
         elif pd.api.types.is_numeric_dtype(df[col]):
-            config[col] = st.column_config.NumberColumn(label=label, help=col, width=width)
+            config[col] = st.column_config.NumberColumn(label=label, help=col)
         else:
-            config[col] = st.column_config.TextColumn(label=label, help=col, width=width)
+            config[col] = st.column_config.TextColumn(label=label, help=col)
     return config
 
 
@@ -105,14 +109,23 @@ def empty_value_mask(series: pd.Series) -> pd.Series:
 
 
 def json_safe(value: Any) -> Any:
-    if isinstance(value, (date, datetime)):
+    if isinstance(value, (date, datetime, pd.Timestamp)):
         return value.isoformat()
+    if isinstance(value, pd.DataFrame):
+        return value.to_dict(orient="records")
+    if isinstance(value, pd.Series):
+        return value.tolist()
     if isinstance(value, tuple):
         return [json_safe(v) for v in value]
     if isinstance(value, list):
         return [json_safe(v) for v in value]
     if isinstance(value, dict):
         return {k: json_safe(v) for k, v in value.items()}
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
     return value
 
 
@@ -120,6 +133,10 @@ def is_forbidden_widget_key(key: str) -> bool:
     return (
         "_preset_" in key
         or "_editor" in key
+        or "__filter_store" in key
+        or key.endswith("_qc_excluded_df")
+        or key.endswith("_criteria_excluded_df")
+        or key.endswith("_excluded_df")
         or key.endswith("_download")
         or key.endswith("_activate_sidebar")
         or key.endswith("_pending_preset_state")
@@ -180,6 +197,430 @@ def build_export_zip(csv_bytes: bytes, csv_name: str, filter_state: Dict[str, An
     return buf.getvalue()
 
 
+@st.cache_data(show_spinner=False)
+def load_qc_green_assets_from_xlsx(path_str: str, color_hex: str, asset_col_name: str) -> List[str]:
+    wb = load_workbook(path_str, data_only=True)
+    ws = wb.active
+    headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    normalized = [str(h).strip() if h is not None else "" for h in headers]
+    target = str(asset_col_name).strip()
+    if target not in normalized:
+        return []
+    asset_idx = normalized.index(target) + 1
+
+    green = color_hex.upper().replace("#", "")
+    assets: List[str] = []
+    for r in range(2, ws.max_row + 1):
+        row_has_green = False
+        for c in range(1, ws.max_column + 1):
+            cell = ws.cell(r, c)
+            rgb = cell.fill.fgColor.rgb
+            if isinstance(rgb, str) and rgb.upper().endswith(green):
+                row_has_green = True
+                break
+        if row_has_green:
+            value = ws.cell(r, asset_idx).value
+            if value is not None and str(value).strip():
+                assets.append(str(value).strip())
+    return sorted(set(assets))
+
+
+def list_criteria_sets() -> List[Path]:
+    return sorted(CRITERIA_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def default_criteria_set() -> Dict[str, Any]:
+    return {
+        "name": "baseline_v1",
+        "version": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+        "notes": "Initiales Kriterien-Set",
+        "rules": [
+            {
+                "id": "interval_gt_10",
+                "active": True,
+                "type": "numeric_gt",
+                "column": "Interval",
+                "value": 10,
+                "action": "exclude_from_prio",
+                "reason": "Intervall > 10 Monate",
+            },
+            {
+                "id": "asset_id_len_lt_34",
+                "active": True,
+                "type": "string_length_lt",
+                "column": "Asset ID",
+                "value": 34,
+                "action": "exclude_from_prio",
+                "reason": "Asset ID unter 34 Zeichen",
+            },
+            {
+                "id": "qc_self_labeled",
+                "active": True,
+                "type": "ref_list_match",
+                "column": "Asset ID",
+                "ref_list": "qc_self_labeled_assets",
+                "action": "exclude_from_prio",
+                "reason": "Wird durch QC selbst gelabelt",
+            },
+            {
+                "id": "prio1_due_soon",
+                "active": True,
+                "action": "assign_prio",
+                "priority": "P1",
+                "reason": "Due Date ist kurzfristig",
+                "when": {"op": "<=", "column": "months_until_due", "value": 1.0},
+            },
+            {
+                "id": "prio2_within_interval_half",
+                "active": True,
+                "action": "assign_prio",
+                "priority": "P2",
+                "reason": "Due Date liegt innerhalb Intervall/2",
+                "when": {
+                    "op": "AND",
+                    "conditions": [
+                        {"op": ">", "column": "months_until_due", "value": 1.0},
+                        {"op": "<=", "column": "months_until_due", "value_col": "interval_half_months"},
+                    ],
+                },
+            },
+        ],
+    }
+
+
+def ensure_default_criteria_file() -> Path:
+    existing = list_criteria_sets()
+    if existing:
+        return existing[0]
+    p = CRITERIA_DIR / "baseline_v1.json"
+    p.write_text(json.dumps(default_criteria_set(), ensure_ascii=False, indent=2), encoding="utf-8")
+    return p
+
+
+def load_criteria(path_str: str) -> Dict[str, Any]:
+    try:
+        return json.loads(Path(path_str).read_text(encoding="utf-8"))
+    except Exception:
+        return default_criteria_set()
+
+
+def save_criteria(criteria: Dict[str, Any], filename: str) -> Path:
+    safe = filename.strip() or f"criteria_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    if not safe.endswith(".json"):
+        safe += ".json"
+    target = CRITERIA_DIR / safe
+    target.write_text(json.dumps(criteria, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
+def add_derived_time_columns(df: pd.DataFrame) -> pd.DataFrame:
+    working = df.copy()
+
+    due_candidates = ["Due Date BMRAM / End Datum SAP", "Due Date", "End Datum SAP"]
+    start_candidates = ["Start Datum SAP Auftrag", "Start Datum", "GoLive", "Go Live"]
+    interval_candidates = ["Interval", "Intervall"]
+
+    due_col = next((c for c in due_candidates if c in working.columns), None)
+    start_col = next((c for c in start_candidates if c in working.columns), None)
+    interval_col = next((c for c in interval_candidates if c in working.columns), None)
+
+    today = pd.Timestamp.today().normalize()
+
+    if due_col:
+        due_dt = pd.to_datetime(working[due_col], errors="coerce", dayfirst=True)
+        working["months_until_due"] = (due_dt - today).dt.days / 30.4375
+    else:
+        working["months_until_due"] = pd.NA
+
+    if start_col:
+        start_dt = pd.to_datetime(working[start_col], errors="coerce", dayfirst=True)
+        working["months_since_start"] = (today - start_dt).dt.days / 30.4375
+    else:
+        working["months_since_start"] = pd.NA
+
+    if interval_col:
+        interval_num = pd.to_numeric(working[interval_col], errors="coerce")
+        working["interval_half_months"] = interval_num / 2.0
+    else:
+        working["interval_half_months"] = pd.NA
+
+    return working
+
+
+def _compare_series(left: pd.Series, op: str, right: Any) -> pd.Series:
+    if isinstance(right, pd.Series):
+        right_series = right
+    else:
+        right_series = pd.Series([right] * len(left), index=left.index)
+
+    if op == ">":
+        return left > right_series
+    if op == ">=":
+        return left >= right_series
+    if op == "<":
+        return left < right_series
+    if op == "<=":
+        return left <= right_series
+    if op == "==":
+        return left == right_series
+    if op == "!=":
+        return left != right_series
+    return pd.Series([False] * len(left), index=left.index)
+
+
+def evaluate_condition(df: pd.DataFrame, cond: Dict[str, Any], reference_lists: Dict[str, set]) -> pd.Series:
+    if not isinstance(cond, dict):
+        return pd.Series([False] * len(df), index=df.index)
+
+    op = str(cond.get("op", "")).strip().upper()
+
+    if op == "AND":
+        conditions = cond.get("conditions", []) or []
+        if not conditions:
+            return pd.Series([True] * len(df), index=df.index)
+        mask = pd.Series([True] * len(df), index=df.index)
+        for sub in conditions:
+            mask = mask & evaluate_condition(df, sub, reference_lists).fillna(False)
+        return mask
+
+    if op == "OR":
+        conditions = cond.get("conditions", []) or []
+        if not conditions:
+            return pd.Series([False] * len(df), index=df.index)
+        mask = pd.Series([False] * len(df), index=df.index)
+        for sub in conditions:
+            mask = mask | evaluate_condition(df, sub, reference_lists).fillna(False)
+        return mask
+
+    if op == "NOT":
+        sub = cond.get("condition", {})
+        return ~evaluate_condition(df, sub, reference_lists).fillna(False)
+
+    col = cond.get("column")
+    if col not in df.columns:
+        return pd.Series([False] * len(df), index=df.index)
+
+    left_num = pd.to_numeric(df[col], errors="coerce")
+    right_col = cond.get("value_col")
+    if right_col and right_col in df.columns:
+        right_num = pd.to_numeric(df[right_col], errors="coerce")
+        return _compare_series(left_num, op, right_num).fillna(False)
+
+    value = cond.get("value")
+    if op in {">", ">=", "<", "<="}:
+        try:
+            return _compare_series(left_num, op, float(value)).fillna(False)
+        except Exception:
+            return pd.Series([False] * len(df), index=df.index)
+
+    if op in {"==", "!="}:
+        if isinstance(value, (int, float)):
+            return _compare_series(left_num, op, value).fillna(False)
+        left_text = df[col].astype("string")
+        right_text = "" if value is None else str(value)
+        return _compare_series(left_text, op, right_text).fillna(False)
+
+    if op == "REGEX":
+        pattern = str(cond.get("pattern", "")).strip()
+        if not pattern:
+            return pd.Series([False] * len(df), index=df.index)
+        try:
+            re.compile(pattern)
+            return df[col].astype("string").str.contains(pattern, case=False, regex=True, na=False)
+        except re.error:
+            return pd.Series([False] * len(df), index=df.index)
+
+    if op == "IN_REF_LIST":
+        ref_name = str(cond.get("ref_list", "")).strip()
+        ref_values = reference_lists.get(ref_name, set())
+        if not ref_values:
+            return pd.Series([False] * len(df), index=df.index)
+        return df[col].astype("string").str.strip().isin(ref_values)
+
+    return pd.Series([False] * len(df), index=df.index)
+
+
+def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_lists: Dict[str, set]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not criteria or not criteria.get("rules"):
+        included = df.copy()
+        included["decision_status"] = "in_prio"
+        included["exclude_reasons"] = ""
+        included["matched_rule_ids"] = ""
+        return included, df.iloc[0:0].copy()
+
+    working = add_derived_time_columns(df)
+    reason_col = pd.Series([""] * len(working), index=working.index, dtype="string")
+    rule_col = pd.Series([""] * len(working), index=working.index, dtype="string")
+    exclude_mask = pd.Series([False] * len(working), index=working.index)
+    prio_stage = pd.Series(["P3"] * len(working), index=working.index, dtype="string")
+    prio_rank = pd.Series([3] * len(working), index=working.index, dtype="int64")
+
+    for rule in criteria.get("rules", []):
+        if not rule.get("active", True):
+            continue
+        col = rule.get("column")
+        rtype = str(rule.get("type", "")).strip()
+        reason = str(rule.get("reason", "")).strip() or str(rule.get("id", "rule"))
+        rid = str(rule.get("id", "rule"))
+        action = str(rule.get("action", "exclude_from_prio"))
+        mask = pd.Series([False] * len(working), index=working.index)
+
+        if isinstance(rule.get("when"), dict):
+            mask = evaluate_condition(working, rule.get("when"), reference_lists).fillna(False)
+        else:
+            if col not in working.columns:
+                continue
+            # Legacy flat rules remain supported.
+            if rtype == "numeric_gt":
+                val = float(rule.get("value", 0))
+                mask = pd.to_numeric(working[col], errors="coerce") > val
+            elif rtype == "string_length_lt":
+                val = int(rule.get("value", 0))
+                mask = working[col].astype("string").str.len().fillna(0) < val
+            elif rtype == "regex_match":
+                pattern = str(rule.get("pattern", "")).strip()
+                if pattern:
+                    try:
+                        re.compile(pattern)
+                        mask = working[col].astype("string").str.contains(pattern, case=False, regex=True, na=False)
+                    except re.error:
+                        pass
+            elif rtype == "date_between":
+                start = str(rule.get("start", "")).strip()
+                end = str(rule.get("end", "")).strip()
+                parsed = pd.to_datetime(working[col], errors="coerce")
+                if start and end:
+                    try:
+                        d1 = pd.to_datetime(start)
+                        d2 = pd.to_datetime(end)
+                        mask = parsed.between(d1, d2)
+                    except Exception:
+                        pass
+            elif rtype == "ref_list_match":
+                ref_name = str(rule.get("ref_list", "")).strip()
+                ref_values = reference_lists.get(ref_name, set())
+                if ref_values:
+                    mask = working[col].astype("string").str.strip().isin(ref_values)
+
+        if action == "exclude_from_prio":
+            exclude_mask = exclude_mask | mask.fillna(False)
+            reason_col.loc[mask] = (reason_col.loc[mask] + "; " + reason).str.strip("; ")
+            rule_col.loc[mask] = (rule_col.loc[mask] + "; " + rid).str.strip("; ")
+        elif action == "assign_prio":
+            target = str(rule.get("priority", "P3")).upper()
+            target_rank = {"P1": 1, "P2": 2, "P3": 3}.get(target, 3)
+            upgrade = mask.fillna(False) & (target_rank < prio_rank)
+            prio_rank.loc[upgrade] = target_rank
+            prio_stage.loc[upgrade] = target
+            rule_col.loc[upgrade] = (rule_col.loc[upgrade] + "; " + rid).str.strip("; ")
+
+    excluded = working[exclude_mask].copy()
+    excluded["decision_status"] = "excluded"
+    excluded["exclude_reasons"] = reason_col.loc[exclude_mask].fillna("")
+    excluded["matched_rule_ids"] = rule_col.loc[exclude_mask].fillna("")
+    excluded["prio_stage"] = "excluded"
+
+    included = working[~exclude_mask].copy()
+    included["decision_status"] = "in_prio"
+    included["exclude_reasons"] = ""
+    included["matched_rule_ids"] = rule_col.loc[~exclude_mask].fillna("")
+    included["prio_stage"] = prio_stage.loc[~exclude_mask].fillna("P3")
+    return included, excluded
+
+
+def _find_rule(criteria: Dict[str, Any], rule_id: str) -> Dict[str, Any] | None:
+    for rule in criteria.get("rules", []):
+        if str(rule.get("id", "")) == rule_id:
+            return rule
+    return None
+
+
+def _count_rule_matches(df: pd.DataFrame, rule: Dict[str, Any], reference_lists: Dict[str, set]) -> int:
+    working = add_derived_time_columns(df)
+    col = rule.get("column")
+    rtype = str(rule.get("type", "")).strip()
+    mask = pd.Series([False] * len(working), index=working.index)
+    if isinstance(rule.get("when"), dict):
+        mask = evaluate_condition(working, rule.get("when"), reference_lists).fillna(False)
+        return int(mask.sum())
+    if col not in working.columns:
+        return 0
+    if rtype == "numeric_gt":
+        mask = pd.to_numeric(working[col], errors="coerce") > float(rule.get("value", 0))
+    elif rtype == "string_length_lt":
+        mask = working[col].astype("string").str.len().fillna(0) < int(rule.get("value", 0))
+    elif rtype == "regex_match":
+        pattern = str(rule.get("pattern", "")).strip()
+        if pattern:
+            try:
+                re.compile(pattern)
+                mask = working[col].astype("string").str.contains(pattern, case=False, regex=True, na=False)
+            except re.error:
+                pass
+    elif rtype == "date_between":
+        start = str(rule.get("start", "")).strip()
+        end = str(rule.get("end", "")).strip()
+        if start and end:
+            try:
+                parsed = pd.to_datetime(working[col], errors="coerce")
+                mask = parsed.between(pd.to_datetime(start), pd.to_datetime(end))
+            except Exception:
+                pass
+    elif rtype == "ref_list_match":
+        ref_name = str(rule.get("ref_list", "")).strip()
+        ref_values = reference_lists.get(ref_name, set())
+        if ref_values:
+            mask = working[col].astype("string").str.strip().isin(ref_values)
+    return int(mask.fillna(False).sum())
+
+
+def render_live_criteria_sidebar(df: pd.DataFrame) -> None:
+    criteria = st.session_state.get("active_criteria_set", default_criteria_set())
+    if not criteria.get("rules"):
+        return
+
+    ref_lists = {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))}
+    with st.sidebar.expander("Live-Kriterien", expanded=True):
+        st.caption(f"Aktiv: {criteria.get('name', '')} | {criteria.get('version', '')}")
+
+        r_interval = _find_rule(criteria, "interval_gt_10")
+        if r_interval:
+            r_interval["active"] = st.checkbox("Intervall-Regel aktiv", value=bool(r_interval.get("active", True)), key="live_rule_interval_on")
+            r_interval["value"] = st.slider("Intervall > (Monate)", min_value=0, max_value=36, value=int(float(r_interval.get("value", 10))), step=1, key="live_rule_interval_val")
+            r_interval["reason"] = st.text_input("Grund Intervall-Regel", value=str(r_interval.get("reason", "")), key="live_rule_interval_reason")
+            st.caption(f"Treffer aktuell: {_count_rule_matches(df, r_interval, ref_lists)}")
+
+        r_asset = _find_rule(criteria, "asset_id_len_lt_34")
+        if r_asset:
+            r_asset["active"] = st.checkbox("Asset-ID-Längenregel aktiv", value=bool(r_asset.get("active", True)), key="live_rule_asset_on")
+            r_asset["value"] = st.slider("Asset ID Länge < ", min_value=1, max_value=80, value=int(float(r_asset.get("value", 34))), step=1, key="live_rule_asset_val")
+            r_asset["reason"] = st.text_input("Grund Asset-ID-Regel", value=str(r_asset.get("reason", "")), key="live_rule_asset_reason")
+            st.caption(f"Treffer aktuell: {_count_rule_matches(df, r_asset, ref_lists)}")
+
+        r_qc = _find_rule(criteria, "qc_self_labeled")
+        if r_qc:
+            r_qc["active"] = st.checkbox("QC-Selbstlabeling-Regel aktiv", value=bool(r_qc.get("active", True)), key="live_rule_qc_on")
+            r_qc["reason"] = st.text_input("Grund QC-Regel", value=str(r_qc.get("reason", "")), key="live_rule_qc_reason")
+            st.caption(f"Treffer aktuell: {_count_rule_matches(df, r_qc, ref_lists)}")
+
+        st.session_state["active_criteria_set"] = criteria
+def apply_qc_exclusion(df: pd.DataFrame, prefix: str, value_getter) -> tuple[pd.DataFrame, pd.DataFrame]:
+    enabled = bool(value_getter(f"{prefix}_qc_exclude_on", False))
+    asset_col = value_getter(f"{prefix}_qc_asset_col", "Asset ID")
+    reason = value_getter(f"{prefix}_qc_reason", "Wird durch QC selbst gelabelt")
+    qc_assets = st.session_state.get("qc_green_assets", [])
+    if (not enabled) or (not qc_assets) or (asset_col not in df.columns):
+        return df, df.iloc[0:0].copy()
+
+    asset_series = df[asset_col].astype("string").str.strip()
+    mask = asset_series.isin(set(qc_assets))
+    excluded = df[mask].copy()
+    excluded["exclude_rule"] = "qc_self_labeled"
+    excluded["exclude_reason"] = reason
+    included = df[~mask].copy()
+    return included, excluded
+
+
 def remap_state_prefix(state: Dict[str, Any], target_prefix: str) -> Dict[str, Any]:
     source_prefix = None
     for key in state.keys():
@@ -202,6 +643,65 @@ def remap_state_prefix(state: Dict[str, Any], target_prefix: str) -> Dict[str, A
         else:
             remapped[key] = value
     return remapped
+
+
+def _flatten_loaded_state(raw: Dict[str, Any]) -> Dict[str, Any]:
+    flat: Dict[str, Any] = {}
+
+    def walk(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.startswith(("view_a_", "view_b_", "view_c_")) and not is_forbidden_widget_key(k):
+                    flat[k] = v
+                walk(v)
+
+    walk(raw)
+    return flat
+
+
+def extract_loaded_state(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    # Support both "preset" format and "csv+filter export" format.
+    candidate = parsed.get("state")
+    if not isinstance(candidate, dict):
+        candidate = parsed.get("filters")
+    if not isinstance(candidate, dict):
+        candidate = parsed if isinstance(parsed, dict) else {}
+    return _flatten_loaded_state(candidate)
+
+
+def _resolve_column_name(raw_name: str, available_cols: List[str]) -> str:
+    if raw_name in available_cols:
+        return raw_name
+    raw_trim = str(raw_name).strip()
+    if raw_trim in available_cols:
+        return raw_trim
+    # Fallback: match by trimmed representation.
+    for col in available_cols:
+        if str(col).strip() == raw_trim:
+            return col
+    return raw_name
+
+
+def normalize_loaded_state_columns(state: Dict[str, Any], available_cols: List[str]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    for key, value in state.items():
+        new_key = key
+        new_value = value
+
+        # Direct column selectors.
+        if key.endswith("_regex_col") or key.endswith("_date_col") or "_rule_col_" in key:
+            if isinstance(value, str):
+                new_value = _resolve_column_name(value, available_cols)
+
+        # Category keys encode the column name in the key itself.
+        if "_cat_" in key:
+            prefix, raw_col = key.split("_cat_", 1)
+            mapped_col = _resolve_column_name(raw_col, available_cols)
+            new_key = f"{prefix}_cat_{mapped_col}"
+
+        normalized[new_key] = new_value
+
+    return normalized
 
 
 def apply_view_state(state: Dict[str, Any]) -> None:
@@ -250,6 +750,8 @@ def sync_store_from_session(prefix: str) -> None:
     store = get_filter_store(prefix).copy()
     for key, value in st.session_state.items():
         if key.startswith(f"{prefix}_") and not is_forbidden_widget_key(key):
+            if isinstance(value, pd.DataFrame):
+                continue
             store[key] = json_safe(value)
     set_filter_store(prefix, store)
 
@@ -355,6 +857,14 @@ def _apply_filters_from_state(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
         result["prio_match"] = result["prio_score"] > 0
         filtered = result
 
+    filtered, excluded_qc = apply_qc_exclusion(filtered, prefix, sget)
+    st.session_state[f"{prefix}_qc_excluded_df"] = excluded_qc
+
+    criteria = st.session_state.get("active_criteria_set", {})
+    reference_lists = {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))}
+    filtered, excluded_rules = apply_criteria_rules(filtered, criteria, reference_lists)
+    st.session_state[f"{prefix}_criteria_excluded_df"] = excluded_rules
+
     return filtered
 
 
@@ -386,7 +896,8 @@ def render_view_preset_tools(prefix: str, view_name: str) -> None:
         if uploaded is not None and st.button("Preset jetzt laden", key=f"{prefix}_preset_apply_btn"):
             try:
                 parsed = json.load(uploaded)
-                incoming_state = remap_state_prefix(parsed.get("state", {}), prefix)
+                incoming_state = extract_loaded_state(parsed)
+                incoming_state = remap_state_prefix(incoming_state, prefix)
                 st.session_state[f"{prefix}_pending_preset_state"] = incoming_state
                 st.session_state[f"{prefix}_preset_loaded_msg"] = True
                 st.rerun()
@@ -599,6 +1110,26 @@ def apply_filters(df: pd.DataFrame, prefix: str, show_sidebar_filters: bool) -> 
             result["prio_match"] = result["prio_score"] > 0
             filtered = result
 
+    with st.sidebar.expander("QC-Ausnahme", expanded=False) as qc_box:
+        qc_box.checkbox("QC-Selbstlabeling ausschließen", value=False, key=f"{prefix}_qc_exclude_on")
+        asset_options = list(filtered.columns)
+        default_asset = "Asset ID" if "Asset ID" in asset_options else (asset_options[0] if asset_options else "")
+        if asset_options:
+            qc_box.selectbox("Asset-Spalte", asset_options, index=asset_options.index(default_asset), key=f"{prefix}_qc_asset_col")
+        qc_box.text_input("Ausschluss-Begründung", value="Wird durch QC selbst gelabelt", key=f"{prefix}_qc_reason")
+        if st.session_state.get("qc_green_assets"):
+            qc_box.caption(f"QC-Referenzliste aktiv: {len(st.session_state['qc_green_assets'])} Asset IDs")
+        else:
+            qc_box.caption("Keine QC-Referenzliste geladen.")
+
+    filtered, excluded_qc = apply_qc_exclusion(filtered, prefix, st.session_state.get)
+    st.session_state[f"{prefix}_qc_excluded_df"] = excluded_qc
+
+    criteria = st.session_state.get("active_criteria_set", {})
+    reference_lists = {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))}
+    filtered, excluded_rules = apply_criteria_rules(filtered, criteria, reference_lists)
+    st.session_state[f"{prefix}_criteria_excluded_df"] = excluded_rules
+
     sync_store_from_session(prefix)
     return filtered
 
@@ -672,6 +1203,34 @@ def render_summary(df: pd.DataFrame, prefix: str) -> None:
         column_config=build_column_config(summary, allow_manual_edit=False),
     )
 
+    st.markdown("#### Gruppendetails")
+    group_values = summary[group_col].astype("string").fillna("").tolist()
+    if not group_values:
+        return
+    default_group = group_values[0]
+    selected_group = st.selectbox(
+        "Gruppe auswählen",
+        options=group_values,
+        index=0,
+        key=f"{prefix}_group_detail_pick",
+    )
+    detail_df = df[df[group_col].astype("string").fillna("") == selected_group].copy()
+    st.write(f"{len(detail_df)} Detailzeilen für Gruppe: {selected_group}")
+    default_cols = [c for c in [group_col, "Zugänglichkeit", "Standort"] if c in detail_df.columns]
+    shown_cols = st.multiselect(
+        "Spalten in Details",
+        options=list(detail_df.columns),
+        default=default_cols if default_cols else list(detail_df.columns)[: min(8, len(detail_df.columns))],
+        key=f"{prefix}_group_detail_cols",
+    )
+    detail_view = detail_df[shown_cols] if shown_cols else detail_df
+    st.dataframe(
+        detail_view,
+        use_container_width=True,
+        height=320,
+        column_config=build_column_config(detail_view, allow_manual_edit=False),
+    )
+
 
 def render_view(df: pd.DataFrame, view_name: str, prefix: str, active_prefix: str) -> None:
     st.markdown(f"### {view_name}")
@@ -688,6 +1247,55 @@ def render_view(df: pd.DataFrame, view_name: str, prefix: str, active_prefix: st
     st.write(f"{len(filtered)} von {len(df)} Zeilen")
     edited = apply_manual_override(filtered, prefix)
     render_summary(edited, prefix)
+
+    if "prio_stage" in edited.columns:
+        st.markdown("#### Prioritätsstufen (aus Kriterien-Set)")
+        prio_summary = edited.groupby("prio_stage", dropna=False).size().reset_index(name="anzahl")
+        prio_summary = prio_summary.sort_values("prio_stage")
+        st.dataframe(
+            prio_summary,
+            use_container_width=True,
+            height=180,
+            column_config=build_column_config(prio_summary, allow_manual_edit=False),
+        )
+
+    excluded_qc = st.session_state.get(f"{prefix}_qc_excluded_df")
+    if isinstance(excluded_qc, pd.DataFrame) and not excluded_qc.empty:
+        st.markdown("#### Ausgeschlossen durch QC-Regel")
+        st.write(f"{len(excluded_qc)} Zeilen wurden bewusst ausgeschlossen.")
+        show_cols_default = [c for c in ["Asset ID", "Gebäude / MU", "Standort", "exclude_rule", "exclude_reason"] if c in excluded_qc.columns]
+        show_cols = st.multiselect(
+            "Spalten in Ausschlussliste",
+            options=list(excluded_qc.columns),
+            default=show_cols_default if show_cols_default else list(excluded_qc.columns)[: min(8, len(excluded_qc.columns))],
+            key=f"{prefix}_qc_excluded_cols",
+        )
+        ex_view = excluded_qc[show_cols] if show_cols else excluded_qc
+        st.dataframe(
+            ex_view,
+            use_container_width=True,
+            height=260,
+            column_config=build_column_config(ex_view, allow_manual_edit=False),
+        )
+
+    excluded_criteria = st.session_state.get(f"{prefix}_criteria_excluded_df")
+    if isinstance(excluded_criteria, pd.DataFrame) and not excluded_criteria.empty:
+        st.markdown("#### Ausgeschlossen durch Kriterien-Set")
+        st.write(f"{len(excluded_criteria)} Zeilen wurden durch aktive Kriterien ausgeschlossen.")
+        default_cols = [c for c in ["Asset ID", "Gebäude / MU", "Standort", "matched_rule_ids", "exclude_reasons"] if c in excluded_criteria.columns]
+        sel_cols = st.multiselect(
+            "Spalten in Kriterien-Ausschlussliste",
+            options=list(excluded_criteria.columns),
+            default=default_cols if default_cols else list(excluded_criteria.columns)[: min(8, len(excluded_criteria.columns))],
+            key=f"{prefix}_criteria_excluded_cols",
+        )
+        crit_view = excluded_criteria[sel_cols] if sel_cols else excluded_criteria
+        st.dataframe(
+            crit_view,
+            use_container_width=True,
+            height=260,
+            column_config=build_column_config(crit_view, allow_manual_edit=False),
+        )
 
     csv_name = f"relabeling_{prefix}.csv"
     csv_bytes = edited.to_csv(index=False).encode("utf-8-sig")
@@ -875,10 +1483,142 @@ def render_standort_analyse(df: pd.DataFrame) -> None:
     )
 
 
+
+
+def build_condition_preview(cond: Dict[str, Any]) -> str:
+    if not isinstance(cond, dict):
+        return "(leer)"
+    op = str(cond.get("op", "")).upper()
+    if op in {"AND", "OR"}:
+        parts = [build_condition_preview(c) for c in cond.get("conditions", [])]
+        return f" ({f' {op} '.join(parts)}) "
+    if op == "NOT":
+        return f"NOT ({build_condition_preview(cond.get('condition', {}))})"
+    col = str(cond.get("column", "?"))
+    rhs = f"[{cond.get('value_col')}]" if cond.get("value_col") else repr(cond.get("value"))
+    return f"{col} {op} {rhs}"
+
+
+def render_rule_builder(df: pd.DataFrame) -> None:
+    st.markdown("#### Regel-Builder (visuell)")
+    columns = list(df.columns) + ["months_until_due", "months_since_start", "interval_half_months"]
+    default_cols = [c for c in ["Interval", "Asset ID", "Due Date BMRAM / End Datum SAP"] if c in columns]
+    if not default_cols:
+        default_cols = columns[:1]
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+    action = c1.selectbox("Aktion", ["exclude_from_prio", "assign_prio"], key="rb_action")
+    priority = c2.selectbox("Prio (bei assign)", ["P1", "P2", "P3"], key="rb_priority")
+    logic = c3.selectbox("Verknüpfung", ["AND", "OR"], key="rb_logic")
+
+    st.markdown("Bedingung 1")
+    a1, a2, a3, a4 = st.columns([2, 1, 1, 2])
+    c1_col = a1.selectbox("Spalte", columns, index=columns.index(default_cols[0]), key="rb_c1_col")
+    c1_op = a2.selectbox("Operator", [">", ">=", "<", "<=", "==", "!="], key="rb_c1_op")
+    c1_mode = a3.selectbox("Werttyp", ["Konstante", "Spalte"], key="rb_c1_mode")
+    c1_val = a4.text_input("Wert", value="10", key="rb_c1_val") if c1_mode == "Konstante" else a4.selectbox("Vergleichsspalte", columns, key="rb_c1_val_col")
+
+    st.markdown("Bedingung 2")
+    b1, b2, b3, b4 = st.columns([2, 1, 1, 2])
+    c2_col = b1.selectbox("Spalte ", columns, index=columns.index(default_cols[-1]), key="rb_c2_col")
+    c2_op = b2.selectbox("Operator ", [">", ">=", "<", "<=", "==", "!="], key="rb_c2_op")
+    c2_mode = b3.selectbox("Werttyp ", ["Konstante", "Spalte"], key="rb_c2_mode")
+    c2_val = b4.text_input("Wert ", value="1", key="rb_c2_val") if c2_mode == "Konstante" else b4.selectbox("Vergleichsspalte ", columns, key="rb_c2_val_col")
+
+    rule_id = st.text_input("Regel-ID", value=f"rule_{datetime.now().strftime('%H%M%S')}", key="rb_id")
+    reason = st.text_input("Begründung", value="Manuell erstellte Regel", key="rb_reason")
+
+    cond1 = {"op": c1_op, "column": c1_col}
+    cond2 = {"op": c2_op, "column": c2_col}
+
+    def parse_const(v: str):
+        try:
+            return float(v)
+        except Exception:
+            return v
+
+    if c1_mode == "Konstante":
+        cond1["value"] = parse_const(c1_val)
+    else:
+        cond1["value_col"] = c1_val
+
+    if c2_mode == "Konstante":
+        cond2["value"] = parse_const(c2_val)
+    else:
+        cond2["value_col"] = c2_val
+
+    when = {"op": logic, "conditions": [cond1, cond2]}
+    preview = build_condition_preview(when)
+    st.caption(f"Vorschau: {preview}")
+
+    if st.button("Regel zum aktiven Kriterien-Set hinzufügen", key="rb_add"):
+        criteria = st.session_state.get("active_criteria_set", default_criteria_set())
+        new_rule = {
+            "id": rule_id.strip() or f"rule_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "active": True,
+            "action": action,
+            "reason": reason,
+            "when": when,
+        }
+        if action == "assign_prio":
+            new_rule["priority"] = priority
+        criteria.setdefault("rules", []).append(new_rule)
+        st.session_state["active_criteria_set"] = criteria
+        st.success("Regel hinzugefügt. Jetzt unten 'Kriterien-Version speichern' klicken.")
+        st.rerun()
+
+
+def render_criteria_editor(df: pd.DataFrame) -> None:
+    st.markdown("### Kriterien-Set")
+    criteria = st.session_state.get("active_criteria_set", default_criteria_set())
+    st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
+    st.text_area("Notizen", value=str(criteria.get("notes", "")), key="criteria_notes")
+
+    rules = criteria.get("rules", [])
+    rules_df = pd.DataFrame(rules if rules else [default_criteria_set()["rules"][0]])
+    edited_rules = st.data_editor(
+        rules_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        key="criteria_rules_editor",
+    )
+
+    c1, c2 = st.columns([2, 1])
+    filename = c1.text_input("Dateiname für neue Version", value=f"{criteria.get('name', 'criteria')}_{datetime.now().strftime('%Y%m%d_%H%M')}.json", key="criteria_save_name")
+    if c2.button("Kriterien-Version speichern", key="criteria_save_btn"):
+        new_set = {
+            "name": criteria.get("name", "criteria_set"),
+            "version": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+            "notes": st.session_state.get("criteria_notes", ""),
+            "rules": edited_rules.fillna("").to_dict(orient="records"),
+        }
+        target = save_criteria(new_set, filename)
+        st.session_state["active_criteria_set"] = new_set
+        st.success(f"Gespeichert: {target}")
+
+    st.caption("Regeltypen: numeric_gt, string_length_lt, regex_match, date_between, ref_list_match oder when-Block mit AND/OR/NOT")
+    st.caption("Action: exclude_from_prio oder assign_prio (priority: P1/P2/P3)")
+
+
 def main() -> None:
     apply_custom_style()
     sanitize_filter_stores()
     st.title("KAU Relabeling Priorisierung")
+
+    # Initialize default criteria set and persisted QC reference list.
+    if "criteria_initialized" not in st.session_state:
+        default_path = ensure_default_criteria_file()
+        st.session_state["active_criteria_path"] = str(default_path)
+        st.session_state["active_criteria_set"] = load_criteria(str(default_path))
+        qc_csv = REF_DIR / "qc_self_labeled_assets.csv"
+        if qc_csv.exists():
+            try:
+                qc_assets = pd.read_csv(qc_csv)["Asset ID"].dropna().astype(str).str.strip().tolist()
+                st.session_state["qc_green_assets"] = sorted(set(qc_assets))
+                st.session_state["qc_green_source"] = str(qc_csv)
+            except Exception:
+                pass
+        st.session_state["criteria_initialized"] = True
 
     st.sidebar.header("Datenquelle")
     with st.sidebar.expander("CSV Auswahl / Upload", expanded=False):
@@ -907,6 +1647,24 @@ def main() -> None:
                 temp_path.write_bytes(uploaded_file.getvalue())
                 selected_path = str(temp_path)
 
+    st.sidebar.header("Referenzlisten")
+    with st.sidebar.expander("QC-Grünliste (Excel)", expanded=False):
+        qc_file = st.file_uploader("QC-Excel hochladen", type=["xlsx"], key="qc_excel_upload")
+        qc_color = st.text_input("Grün-Farbcode", value="FF92D050", key="qc_green_color")
+        qc_asset_col = st.text_input("Asset-ID Spaltenname", value="Asset ID", key="qc_asset_col_name")
+        if qc_file is not None and st.button("QC-Liste einlesen", key="qc_load_btn"):
+            qc_path = REF_DIR / Path(qc_file.name).name
+            qc_path.write_bytes(qc_file.getvalue())
+            assets = load_qc_green_assets_from_xlsx(str(qc_path), qc_color, qc_asset_col)
+            st.session_state["qc_green_assets"] = assets
+            st.session_state["qc_green_source"] = str(qc_path)
+            pd.DataFrame({"Asset ID": assets}).to_csv(REF_DIR / "qc_self_labeled_assets.csv", index=False)
+            st.success(f"QC-Liste geladen: {len(assets)} Asset IDs")
+        if st.session_state.get("qc_green_assets") is not None:
+            st.caption(f"Aktive QC-Liste: {len(st.session_state.get('qc_green_assets', []))} Asset IDs")
+            if st.session_state.get("qc_green_source"):
+                st.caption(f"Quelle: {st.session_state['qc_green_source']}")
+
     if "selected_path" not in locals() or not selected_path:
         st.info("Bitte CSV in der Sidebar auswählen oder hochladen.")
         st.stop()
@@ -921,18 +1679,36 @@ def main() -> None:
         key="active_prefix",
     )
 
+    st.sidebar.header("Kriterien")
+    criteria_files = list_criteria_sets()
+    if criteria_files:
+        options = {p.name: str(p) for p in criteria_files}
+        current_path = st.session_state.get("active_criteria_path", str(criteria_files[0]))
+        current_name = Path(current_path).name if current_path else criteria_files[0].name
+        if current_name not in options:
+            current_name = criteria_files[0].name
+        selected_criteria_name = st.sidebar.selectbox("Aktives Kriterien-Set", list(options.keys()), index=list(options.keys()).index(current_name))
+        selected_criteria_path = options[selected_criteria_name]
+        if selected_criteria_path != st.session_state.get("active_criteria_path"):
+            st.session_state["active_criteria_path"] = selected_criteria_path
+            st.session_state["active_criteria_set"] = load_criteria(selected_criteria_path)
+            st.rerun()
+
     df = load_csv_from_path(selected_path)
+    render_live_criteria_sidebar(df)
 
     # Apply pending presets before creating filter widgets to avoid session_state conflicts.
     for pfx in ["view_a", "view_b", "view_c"]:
         pending_key = f"{pfx}_pending_preset_state"
         if pending_key in st.session_state:
-            apply_view_state(st.session_state.pop(pending_key))
+            raw_state = st.session_state.pop(pending_key)
+            mapped_state = normalize_loaded_state_columns(raw_state, list(df.columns))
+            apply_view_state(mapped_state)
 
     st.subheader("Spalten der aktuellen CSV")
     st.write(list(df.columns))
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse", "Kriterien"])
     with tab1:
         render_view(df, "Filteransicht A", "view_a", active_prefix)
     with tab2:
@@ -941,6 +1717,8 @@ def main() -> None:
         render_view(df, "Filteransicht C", "view_c", active_prefix)
     with tab4:
         render_standort_analyse(df)
+    with tab5:
+        render_criteria_editor(df)
 
 
 if __name__ == "__main__":

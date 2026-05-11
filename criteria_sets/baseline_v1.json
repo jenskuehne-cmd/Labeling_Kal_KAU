@@ -1,0 +1,34 @@
+{
+  "name": "baseline_v1",
+  "version": "2026-05-11_151318",
+  "notes": "Initiales Kriterien-Set",
+  "rules": [
+    {
+      "id": "interval_gt_10",
+      "active": true,
+      "type": "numeric_gt",
+      "column": "Interval",
+      "value": 10,
+      "action": "exclude_from_prio",
+      "reason": "Intervall > 10 Monate"
+    },
+    {
+      "id": "asset_id_len_lt_34",
+      "active": true,
+      "type": "string_length_lt",
+      "column": "Asset ID",
+      "value": 34,
+      "action": "exclude_from_prio",
+      "reason": "Asset ID unter 34 Zeichen"
+    },
+    {
+      "id": "qc_self_labeled",
+      "active": true,
+      "type": "ref_list_match",
+      "column": "Asset ID",
+      "ref_list": "qc_self_labeled_assets",
+      "action": "exclude_from_prio",
+      "reason": "Wird durch QC selbst gelabelt"
+    }
+  ]
+}
