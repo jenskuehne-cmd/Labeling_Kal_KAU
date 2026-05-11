@@ -158,3 +158,21 @@ Für Freigabe/Review immer beilegen:
 - verwendete CSV-Version
 - Kriterien-Set-Dateiname
 - Exportdatum
+
+## 11) Neuer Tab: Vergleich
+Im Tab `Vergleich` kannst du 2 Kriterien-Sets direkt gegeneinander rechnen:
+- `Version A` wählen
+- `Version B` wählen
+
+Du siehst:
+- Kennzahlenvergleich mit Delta (`in_prio`, `excluded`, `P1`, `P2`, `P3`, `unterbruch`)
+- Unterschiedsliste auf Zeilenebene (pro `Asset ID`):
+  - Status A/B
+  - Prio A/B
+  - Sub-Prio A/B
+  - Unterbruch A/B
+
+Damit kannst du für Dritte transparent zeigen:
+- was sich geändert hat
+- wie stark es sich geändert hat
+- welche konkreten Messstellen betroffen sind

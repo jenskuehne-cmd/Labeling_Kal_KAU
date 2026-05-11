@@ -1,4 +1,5 @@
 import json
+import ast
 import re
 from io import BytesIO
 from datetime import date, datetime
@@ -80,6 +81,27 @@ def short_label(name: str, max_len: int = 24) -> str:
     return name[: max_len - 3] + "..."
 
 
+
+
+def normalize_name_for_match(s: str) -> str:
+    t = str(s).strip().lower()
+    t = t.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    t = re.sub(r"[^a-z0-9]+", "", t)
+    return t
+
+
+def find_column_by_candidates(df: pd.DataFrame, candidates: List[str]) -> str | None:
+    cols = list(df.columns)
+    for c in candidates:
+        if c in cols:
+            return c
+    normalized = {normalize_name_for_match(col): col for col in cols}
+    for c in candidates:
+        key = normalize_name_for_match(c)
+        if key in normalized:
+            return normalized[key]
+    return None
+
 def build_column_config(df: pd.DataFrame, allow_manual_edit: bool) -> Dict[str, Any]:
     config: Dict[str, Any] = {}
     for col in df.columns:
@@ -138,6 +160,9 @@ def is_forbidden_widget_key(key: str) -> bool:
         or key.endswith("_criteria_excluded_df")
         or key.endswith("_excluded_df")
         or key.endswith("_download")
+        or key.endswith("_download_zip")
+        or key.endswith("_export")
+        or key.endswith("_export_zip")
         or key.endswith("_activate_sidebar")
         or key.endswith("_pending_preset_state")
         or key.endswith("_preset_loaded_msg")
@@ -320,9 +345,9 @@ def add_derived_time_columns(df: pd.DataFrame) -> pd.DataFrame:
     start_candidates = ["Start Datum SAP Auftrag", "Start Datum", "GoLive", "Go Live"]
     interval_candidates = ["Interval", "Intervall"]
 
-    due_col = next((c for c in due_candidates if c in working.columns), None)
-    start_col = next((c for c in start_candidates if c in working.columns), None)
-    interval_col = next((c for c in interval_candidates if c in working.columns), None)
+    due_col = find_column_by_candidates(working, due_candidates)
+    start_col = find_column_by_candidates(working, start_candidates)
+    interval_col = find_column_by_candidates(working, interval_candidates)
 
     today = pd.Timestamp.today().normalize()
     golive_ref = st.session_state.get("golive_reference_date", date(2026, 8, 10))
@@ -349,7 +374,7 @@ def add_derived_time_columns(df: pd.DataFrame) -> pd.DataFrame:
         working["interval_half_months"] = pd.NA
 
     asset_candidates = ["Asset ID", "AssetID", "Asset_Id"]
-    asset_col = next((c for c in asset_candidates if c in working.columns), None)
+    asset_col = find_column_by_candidates(working, asset_candidates)
     if asset_col:
         working["asset_id_length"] = working[asset_col].astype("string").str.len()
     else:
@@ -451,6 +476,40 @@ def evaluate_condition(df: pd.DataFrame, cond: Dict[str, Any], reference_lists: 
     return pd.Series([False] * len(df), index=df.index)
 
 
+
+
+def coerce_when_to_dict(raw_when: Any) -> Dict[str, Any] | None:
+    if isinstance(raw_when, dict):
+        return raw_when
+    if isinstance(raw_when, str):
+        s = raw_when.strip()
+        if not s:
+            return None
+        # Try JSON first, then Python literal format from data_editor export.
+        try:
+            loaded = json.loads(s)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            pass
+        try:
+            loaded = ast.literal_eval(s)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            pass
+    return None
+
+
+def normalize_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(rule)
+    when_obj = coerce_when_to_dict(normalized.get("when"))
+    if when_obj is not None:
+        normalized["when"] = when_obj
+    if isinstance(normalized.get("mark_shutdown"), str):
+        normalized["mark_shutdown"] = normalized.get("mark_shutdown", "").strip().lower() in {"1", "true", "yes", "ja"}
+    return normalized
+
 def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_lists: Dict[str, set]) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not criteria or not criteria.get("rules"):
         included = df.copy()
@@ -468,7 +527,8 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
     prio_rank = pd.Series([3] * len(working), index=working.index, dtype="int64")
     shutdown_required = pd.Series([False] * len(working), index=working.index)
 
-    for rule in criteria.get("rules", []):
+    for raw_rule in criteria.get("rules", []):
+        rule = normalize_rule(raw_rule)
         if not rule.get("active", True):
             continue
         col = rule.get("column")
@@ -551,13 +611,15 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
 
 
 def _find_rule(criteria: Dict[str, Any], rule_id: str) -> Dict[str, Any] | None:
-    for rule in criteria.get("rules", []):
+    for raw_rule in criteria.get("rules", []):
+        rule = normalize_rule(raw_rule)
         if str(rule.get("id", "")) == rule_id:
             return rule
     return None
 
 
 def _count_rule_matches(df: pd.DataFrame, rule: Dict[str, Any], reference_lists: Dict[str, set]) -> int:
+    rule = normalize_rule(rule)
     working = add_derived_time_columns(df)
     col = rule.get("column")
     rtype = str(rule.get("type", "")).strip()
@@ -1257,7 +1319,7 @@ def render_summary(df: pd.DataFrame, prefix: str) -> None:
 def render_view(df: pd.DataFrame, view_name: str, prefix: str, active_prefix: str) -> None:
     st.markdown(f"### {view_name}")
     if st.button("Diese Ansicht links bearbeiten", key=f"{prefix}_activate_sidebar"):
-        st.session_state["active_prefix"] = prefix
+        st.session_state["pending_active_prefix"] = prefix
         st.rerun()
     if active_prefix != prefix:
         st.caption("Hinweis: Sidebar-Filter sind aktuell auf eine andere Ansicht gesetzt.")
@@ -1595,6 +1657,88 @@ def upsert_rule(criteria: Dict[str, Any], rule: Dict[str, Any]) -> None:
     rules.append(rule)
 
 
+def delete_rule_by_id(criteria: Dict[str, Any], rule_id: str) -> None:
+    rules = criteria.get("rules", [])
+    criteria["rules"] = [r for r in rules if str(r.get("id", "")).strip() != str(rule_id).strip()]
+
+
+
+
+def render_prio34_shutdown_recipe(df: pd.DataFrame) -> None:
+    st.markdown("#### Rezept: P1 (Länge) + P1A (Unterbruch)")
+    asset_col = find_column_by_candidates(df, ["Asset ID", "AssetID", "Asset_Id"])
+    access_col = find_column_by_candidates(df, ["Zugänglichkeit", "Zugaenglichkeit", "Accessibility"])
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    len_threshold = c1.number_input("Zeichen-Schwelle", min_value=1, max_value=200, value=34, step=1, key="recipe_len_threshold")
+    include_mittel = c2.checkbox("'mittel' mit einschließen", value=False, key="recipe_include_mittel")
+    substage = c3.text_input("Sub-Prio für Unterbruch", value="1A", key="recipe_substage")
+
+    default_rx = "schwer|sehr\s*schwer"
+    if include_mittel:
+        default_rx = "mittel|schwer|sehr\s*schwer"
+    access_regex = st.text_input("Regex für unterbruchspflichtige Zugänglichkeit", value=default_rx, key="recipe_access_regex")
+
+    st.caption("Regel A: asset_id_length > Schwelle => P1")
+    st.caption("Regel B: asset_id_length <= Schwelle UND Zugänglichkeit trifft Regex => P1 + Subprio + Unterbruch")
+
+    if st.button("Rezept-Regeln hinzufügen/aktualisieren", key="recipe_apply_btn"):
+        if not asset_col:
+            st.error("Asset-ID-Spalte nicht gefunden.")
+            return
+        if not access_col:
+            st.error("Zugänglichkeits-Spalte nicht gefunden.")
+            return
+        try:
+            re.compile(access_regex)
+        except re.error as exc:
+            st.error(f"Ungültiger Regex: {exc}")
+            return
+
+        criteria = st.session_state.get("active_criteria_set", default_criteria_set())
+
+        rule_a = {
+            "id": "prio1_asset_len_gt_threshold",
+            "active": True,
+            "action": "assign_prio",
+            "priority": "P1",
+            "reason": f"Asset-ID länger als {int(len_threshold)} Zeichen",
+            "when": {"op": ">", "column": "asset_id_length", "value": float(len_threshold)},
+        }
+
+        rule_b = {
+            "id": "prio1a_short_but_hard_access",
+            "active": True,
+            "action": "assign_prio",
+            "priority": "P1",
+            "priority_substage": str(substage).strip() or "1A",
+            "mark_shutdown": True,
+            "reason": f"<= {int(len_threshold)} Zeichen, aber schwer zugänglich: Relabeling nur bei Unterbruch",
+            "when": {
+                "op": "AND",
+                "conditions": [
+                    {"op": "<=", "column": "asset_id_length", "value": float(len_threshold)},
+                    {"op": "REGEX", "column": access_col, "pattern": access_regex},
+                ],
+            },
+        }
+
+        upsert_rule(criteria, rule_a)
+        upsert_rule(criteria, rule_b)
+        st.session_state["active_criteria_set"] = criteria
+        st.success("Rezept-Regeln übernommen. Danach Kriterien-Version speichern.")
+        st.rerun()
+
+    if st.button("Rezept-Regeln entfernen", key="recipe_remove_btn"):
+        criteria = st.session_state.get("active_criteria_set", default_criteria_set())
+        delete_rule_by_id(criteria, "prio1_asset_len_gt_threshold")
+        delete_rule_by_id(criteria, "prio1a_short_but_hard_access")
+        delete_rule_by_id(criteria, "shutdown_override_access")
+        delete_rule_by_id(criteria, "shutdown_override_access_length")
+        st.session_state["active_criteria_set"] = criteria
+        st.success("Rezept-/Unterbruch-Regeln entfernt. Danach Kriterien-Version speichern.")
+        st.rerun()
+
 def render_shutdown_override_builder(df: pd.DataFrame) -> None:
     st.markdown("#### Übersteuerung: Unterbruch erforderlich")
     c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
@@ -1603,7 +1747,7 @@ def render_shutdown_override_builder(df: pd.DataFrame) -> None:
     priority = c3.selectbox("Prio", ["P1", "P2", "P3"], index=0, key="shutdown_rule_prio")
     substage = c4.text_input("Sub-Prio", value="1A", key="shutdown_rule_substage")
 
-    access_col = "Zugänglichkeit" if "Zugänglichkeit" in df.columns else None
+    access_col = find_column_by_candidates(df, ["Zugänglichkeit", "Zugaenglichkeit", "Accessibility"])
     default_normal = ["einfach", "mittel"]
     normal_values = default_normal
     if access_col:
@@ -1638,7 +1782,7 @@ def render_shutdown_override_builder(df: pd.DataFrame) -> None:
         criteria = st.session_state.get("active_criteria_set", default_criteria_set())
         conditions = []
         for v in normal_values:
-            conditions.append({"op": "!=", "column": "Zugänglichkeit", "value": str(v)})
+            conditions.append({"op": "!=", "column": access_col, "value": str(v)})
 
         reason = f"Zugänglichkeit nicht in {normal_values}: unterbruchspflichtig"
         if use_len:
@@ -1669,10 +1813,12 @@ def render_golive_hint() -> None:
 def render_criteria_editor(df: pd.DataFrame) -> None:
     st.markdown("### Kriterien-Set")
     render_golive_hint()
-    render_shutdown_override_builder(df)
+    render_prio34_shutdown_recipe(df)
     render_rule_builder(df)
     criteria = st.session_state.get("active_criteria_set", default_criteria_set())
     st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
+    if criteria.get("name") == "none":
+        st.info("Kein Kriterien-Set aktiv. Es werden nur manuelle Filter angewendet.")
     st.text_area("Notizen", value=str(criteria.get("notes", "")), key="criteria_notes")
 
     rules = criteria.get("rules", [])
@@ -1687,19 +1833,131 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
     c1, c2 = st.columns([2, 1])
     filename = c1.text_input("Dateiname für neue Version", value=f"{criteria.get('name', 'criteria')}_{datetime.now().strftime('%Y%m%d_%H%M')}.json", key="criteria_save_name")
     if c2.button("Kriterien-Version speichern", key="criteria_save_btn"):
+        filename_raw = st.session_state.get("criteria_save_name", "").strip()
+        stem_name = Path(filename_raw).stem if filename_raw else "criteria_set"
+        current_name = str(criteria.get("name", "")).strip()
+        effective_name = stem_name if current_name in {"", "none"} else current_name
+
         new_set = {
-            "name": criteria.get("name", "criteria_set"),
+            "name": effective_name,
             "version": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
             "notes": st.session_state.get("criteria_notes", ""),
             "rules": edited_rules.fillna("").to_dict(orient="records"),
         }
         target = save_criteria(new_set, filename)
         st.session_state["active_criteria_set"] = new_set
-        st.success(f"Gespeichert: {target}")
+        st.session_state["active_criteria_path"] = str(target)
+        st.success(f"Gespeichert und aktiviert: {target}")
 
     st.caption("Regeltypen: numeric_gt, string_length_lt, regex_match, date_between, ref_list_match oder when-Block mit AND/OR/NOT")
     st.caption("Action: exclude_from_prio oder assign_prio (priority: P1/P2/P3)")
 
+    with st.expander("Aktives Kriterien-Set (JSON Vorschau)", expanded=False):
+        st.code(json.dumps(criteria, ensure_ascii=False, indent=2), language="json")
+
+    st.markdown("#### Regel entfernen")
+    ids = [str(r.get("id", "")) for r in criteria.get("rules", []) if str(r.get("id", "")).strip()]
+    if ids:
+        col_del_1, col_del_2 = st.columns([3, 1])
+        rid = col_del_1.selectbox("Regel-ID", ids, key="criteria_delete_rule_id")
+        if col_del_2.button("Regel löschen", key="criteria_delete_rule_btn"):
+            delete_rule_by_id(criteria, rid)
+            st.session_state["active_criteria_set"] = criteria
+            st.success(f"Regel gelöscht: {rid}. Danach Kriterien-Version speichern.")
+            st.rerun()
+
+
+
+
+def render_criteria_comparison(df: pd.DataFrame) -> None:
+    st.markdown("### Kriterien-Vergleich")
+    criteria_files = list_criteria_sets()
+    if len(criteria_files) < 2:
+        st.info("Für den Vergleich werden mindestens 2 Kriterien-Sets benötigt.")
+        return
+
+    options = {p.name: str(p) for p in criteria_files}
+    names = list(options.keys())
+
+    c1, c2 = st.columns(2)
+    left_name = c1.selectbox("Version A", names, index=0, key="cmp_left")
+    right_name = c2.selectbox("Version B", names, index=1 if len(names) > 1 else 0, key="cmp_right")
+
+    left = load_criteria(options[left_name])
+    right = load_criteria(options[right_name])
+    ref_lists = {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))}
+
+    left_in, left_ex = apply_criteria_rules(df.copy(), left, ref_lists)
+    right_in, right_ex = apply_criteria_rules(df.copy(), right, ref_lists)
+
+    def metrics(in_df: pd.DataFrame, ex_df: pd.DataFrame) -> Dict[str, int]:
+        return {
+            "in_prio": int(len(in_df)),
+            "excluded": int(len(ex_df)),
+            "P1": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P1").sum()),
+            "P2": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P2").sum()),
+            "P3": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P3").sum()),
+            "unterbruch": int((in_df.get("unterbruch_erforderlich", pd.Series(dtype='bool')) == True).sum()),
+        }
+
+    m1 = metrics(left_in, left_ex)
+    m2 = metrics(right_in, right_ex)
+
+    rows = []
+    for k in ["in_prio", "excluded", "P1", "P2", "P3", "unterbruch"]:
+        rows.append({"kennzahl": k, "A": m1[k], "B": m2[k], "delta_B_minus_A": m2[k] - m1[k]})
+    cmp_df = pd.DataFrame(rows)
+    st.dataframe(cmp_df, use_container_width=True, height=260, column_config=build_column_config(cmp_df, allow_manual_edit=False))
+
+    st.markdown("#### Unterschiedsliste (Zeilenstatus)")
+    id_col = "Asset ID" if "Asset ID" in df.columns else None
+    if not id_col:
+        st.info("Keine Spalte 'Asset ID' gefunden. Statusvergleich pro Zeile nicht verfügbar.")
+        return
+
+    a_status = left_in[[id_col, "decision_status", "prio_stage", "prio_substage", "unterbruch_erforderlich"]].copy()
+    b_status = right_in[[id_col, "decision_status", "prio_stage", "prio_substage", "unterbruch_erforderlich"]].copy()
+
+    a_status = a_status.rename(columns={
+        "decision_status": "status_A",
+        "prio_stage": "prio_A",
+        "prio_substage": "subprio_A",
+        "unterbruch_erforderlich": "unterbruch_A",
+    })
+    b_status = b_status.rename(columns={
+        "decision_status": "status_B",
+        "prio_stage": "prio_B",
+        "prio_substage": "subprio_B",
+        "unterbruch_erforderlich": "unterbruch_B",
+    })
+
+    # Add excluded entries as status rows.
+    if not left_ex.empty:
+        exa = left_ex[[id_col]].copy()
+        exa["status_A"] = "excluded"
+        exa["prio_A"] = "excluded"
+        exa["subprio_A"] = ""
+        exa["unterbruch_A"] = left_ex.get("unterbruch_erforderlich", False).values
+        a_status = pd.concat([a_status, exa], ignore_index=True)
+    if not right_ex.empty:
+        exb = right_ex[[id_col]].copy()
+        exb["status_B"] = "excluded"
+        exb["prio_B"] = "excluded"
+        exb["subprio_B"] = ""
+        exb["unterbruch_B"] = right_ex.get("unterbruch_erforderlich", False).values
+        b_status = pd.concat([b_status, exb], ignore_index=True)
+
+    merged = a_status.merge(b_status, on=id_col, how="outer").fillna("")
+    changed = merged[
+        (merged["status_A"] != merged["status_B"]) |
+        (merged["prio_A"] != merged["prio_B"]) |
+        (merged["subprio_A"] != merged["subprio_B"]) |
+        (merged["unterbruch_A"].astype(str) != merged["unterbruch_B"].astype(str))
+    ].copy()
+
+    st.write(f"{len(changed)} geänderte Zeilen zwischen A und B")
+    show_cols = [id_col, "status_A", "status_B", "prio_A", "prio_B", "subprio_A", "subprio_B", "unterbruch_A", "unterbruch_B"]
+    st.dataframe(changed[show_cols], use_container_width=True, height=360, column_config=build_column_config(changed[show_cols], allow_manual_edit=False))
 
 def main() -> None:
     apply_custom_style()
@@ -1771,6 +2029,8 @@ def main() -> None:
         st.stop()
 
     st.sidebar.header("Ansicht")
+    if "pending_active_prefix" in st.session_state:
+        st.session_state["active_prefix"] = st.session_state.pop("pending_active_prefix")
     if "active_prefix" not in st.session_state:
         st.session_state["active_prefix"] = "view_a"
     active_prefix = st.sidebar.selectbox(
@@ -1791,14 +2051,27 @@ def main() -> None:
     )
     criteria_files = list_criteria_sets()
     if criteria_files:
-        options = {p.name: str(p) for p in criteria_files}
+        options = {"(kein Kriterien-Set)": ""}
+        options.update({p.name: str(p) for p in criteria_files})
+
         current_path = st.session_state.get("active_criteria_path", str(criteria_files[0]))
-        current_name = Path(current_path).name if current_path else criteria_files[0].name
+        current_name = Path(current_path).name if current_path else "(kein Kriterien-Set)"
         if current_name not in options:
-            current_name = criteria_files[0].name
-        selected_criteria_name = st.sidebar.selectbox("Aktives Kriterien-Set", list(options.keys()), index=list(options.keys()).index(current_name))
+            current_name = list(options.keys())[0]
+
+        selected_criteria_name = st.sidebar.selectbox(
+            "Aktives Kriterien-Set",
+            list(options.keys()),
+            index=list(options.keys()).index(current_name),
+        )
         selected_criteria_path = options[selected_criteria_name]
-        if selected_criteria_path != st.session_state.get("active_criteria_path"):
+
+        if selected_criteria_path == "":
+            if st.session_state.get("active_criteria_path") != "":
+                st.session_state["active_criteria_path"] = ""
+                st.session_state["active_criteria_set"] = {"name": "none", "version": "", "notes": "", "rules": []}
+                st.rerun()
+        elif selected_criteria_path != st.session_state.get("active_criteria_path"):
             st.session_state["active_criteria_path"] = selected_criteria_path
             st.session_state["active_criteria_set"] = load_criteria(selected_criteria_path)
             st.rerun()
@@ -1817,7 +2090,7 @@ def main() -> None:
     st.subheader("Spalten der aktuellen CSV")
     st.write(list(df.columns))
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse", "Kriterien"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse", "Kriterien", "Vergleich"])
     with tab1:
         render_view(df, "Filteransicht A", "view_a", active_prefix)
     with tab2:
@@ -1828,6 +2101,8 @@ def main() -> None:
         render_standort_analyse(df)
     with tab5:
         render_criteria_editor(df)
+    with tab6:
+        render_criteria_comparison(df)
 
 
 if __name__ == "__main__":
