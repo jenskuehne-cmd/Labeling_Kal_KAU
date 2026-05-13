@@ -38,18 +38,19 @@ def apply_custom_style() -> None:
         }
         h1, h2, h3, h4, h5, h6, p, label, span, div {
             color: #e8efff;
+            font-size: 0.875rem;
         }
         /* Narrow, denser table typography */
         .stDataFrame, .stDataEditor {
             font-family: "Arial Narrow", "Aptos Narrow", "Liberation Sans Narrow", "Noto Sans", sans-serif !important;
-            font-size: 12px !important;
+            font-size: 10px !important;
         }
         .stDataFrame [role="columnheader"],
         .stDataFrame [role="gridcell"],
         .stDataEditor [role="columnheader"],
         .stDataEditor [role="gridcell"] {
             font-family: "Arial Narrow", "Aptos Narrow", "Liberation Sans Narrow", "Noto Sans", sans-serif !important;
-            font-size: 12px !important;
+            font-size: 10px !important;
             line-height: 1.15 !important;
         }
         </style>
@@ -1568,6 +1569,22 @@ def render_standort_analyse(df: pd.DataFrame) -> None:
 
 
 
+
+
+
+def upsert_rule(criteria: Dict[str, Any], rule: Dict[str, Any]) -> None:
+    rid = str(rule.get("id", "")).strip()
+    rules = criteria.setdefault("rules", [])
+    for i, existing in enumerate(rules):
+        if str(existing.get("id", "")).strip() == rid:
+            rules[i] = rule
+            return
+    rules.append(rule)
+
+
+def delete_rule_by_id(criteria: Dict[str, Any], rule_id: str) -> None:
+    rules = criteria.get("rules", [])
+    criteria["rules"] = [r for r in rules if str(r.get("id", "")).strip() != str(rule_id).strip()]
 
 def build_condition_preview(cond: Dict[str, Any]) -> str:
     if not isinstance(cond, dict):
