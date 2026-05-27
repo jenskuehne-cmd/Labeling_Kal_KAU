@@ -1,200 +1,297 @@
-# Anleitung: Labeling Prio Festlegung
+# Anleitung: KAU Relabeling Priorisierung (Einsteiger + Power-User)
 
-## 1) Start
+## 1) Ziel der App
+Die App hilft, Messstellen systematisch zu priorisieren:
+- Was muss sofort relabelt werden?
+- Was kann später erfolgen?
+- Was wird bewusst ausgeschlossen (z. B. QC/ITOT)?
+
+Wichtig: Die App trennt **Exploration** (Filteransichten) von **Entscheidungslogik** (Kriterien-Set).
+
+## 2) Start
 ```bash
 cd "/Users/kuehnej/Documents/Codex/Labeling_Prio_Festlegung"
 source "/Users/kuehnej/role-dashboard/.venv/bin/activate"
 streamlit run app.py
 ```
 
-## 2) Grundprinzip (wichtig)
-Die App hat 3 Ebenen, die getrennt gedacht werden müssen:
+## 3) Grundlogik in 30 Sekunden
+Es gibt 3 Ebenen:
 
 1. Filteransichten A/B/C
-- Für interaktive Sicht auf Daten (Regex, Kategorien, Zahlen, Datum).
-- Eher für Analyse und Kommunikation.
+- zum Sichten und Analysieren (Regex, Kategorien, numerisch, Datum)
+- schnell, flexibel, aber nicht die „offizielle“ Logik
 
-2. Kriterien-Set (versioniert)
-- Das ist die offizielle Entscheidungslogik.
-- Regeln sind nachvollziehbar und wiederholbar.
+2. Kriterien-Set (JSON)
+- versionierbare Entscheidungslogik
+- regelt Ausschluss, Prio-Stufe, Unterbruch, Phase
 
-3. Referenzlisten (z. B. QC)
-- Externe Ausnahmen, die bewusst und dokumentiert wirken.
-
-## 3) Was ist „nachvollziehbar“?
-Nachvollziehbar heißt:
-- Welche Version war aktiv (`criteria_sets/*.json`)?
-- Welche Regel hat gegriffen (`matched_rule_ids`)?
-- Warum wurde ausgeschlossen/markiert (`exclude_reasons`, `unterbruch_erforderlich`)?
-- Wie verändert sich das Ergebnis zwischen Versionen?
-
-## 4) Standard-Vorgehen pro Runde
-
-### Schritt A: Daten laden
-- In `Datenquelle` aktuelle CSV wählen oder hochladen.
-- Optional im Projekt speichern (`data/`).
-
-### Schritt B: Kriterien-Version wählen
-- Sidebar `Kriterien > Aktives Kriterien-Set` auswählen.
-- Für neue Runde: auf bestehender Version aufbauen.
-
-### Schritt C: Regeln anpassen
-Im Tab `Kriterien`:
-- `Übersteuerung: Unterbruch erforderlich` setzen
-- `Regel-Builder (visuell)` für AND/OR-Ketten nutzen
-- ggf. Tabelle unten für Feinjustierung
-
-### Schritt D: Version speichern
-- `Kriterien-Version speichern`
-- sprechender Dateiname, z. B.:
-  - `baseline_v1.json`
-  - `v2_unterbruch_strikt.json`
-  - `v3_due_window_5m.json`
-
-### Schritt E: Ergebnis lesen
-In A/B/C:
-- `x von y Zeilen`
-- `Ausgeschlossen durch QC-Regel`
-- `Ausgeschlossen durch Kriterien-Set`
-- `Prioritätsstufen (aus Kriterien-Set)`
-- Spalten: `prio_stage`, `prio_substage`, `unterbruch_erforderlich`
-
-## 5) Konkrete Regelbeispiele
-
-### Beispiel 1: Go-Live-Fenster
-Ziel: Intervall < 12 und Due-Date in 0..5 Monaten nach Go-Live.
-
-Vorher:
-- Sidebar `Kriterien > Go-Live Referenzdatum` setzen (z. B. `2026-08-10`).
-
-Regel im Builder:
-- Bedingung 1: `Interval < 12`
-- Bedingung 2: `months_from_golive >= 0`
-- Bedingung 3: `months_from_golive <= 5`
-- Verknüpfung: `AND`
-- Aktion: `assign_prio`
-- Prio: z. B. `P2`
-
-### Beispiel 2: Unterbruchspflicht (dein Fall)
-Ziel: Alles außer `einfach`/`mittel` soll Unterbruch bekommen.
-
-In `Übersteuerung: Unterbruch erforderlich`:
-- `Kein Unterbruch für diese Werte` = `einfach`, `mittel`
-- `Mit Asset-ID-Länge` = aus (wenn Länge egal sein soll)
-- Prio = `P1`
-- Sub-Prio = `1A`
-- `Übersteuerungs-Regel hinzufügen/aktualisieren`
-
-Ergebnis:
-- `unterbruch_erforderlich = True`
-- `prio_stage = P1`
-- `prio_substage = 1A`
-
-### Beispiel 3: Unterbruch nur bei langen IDs (optional)
-Wie Beispiel 2, aber:
-- `Mit Asset-ID-Länge` = an
-- Schwellwert setzen (z. B. `>34`)
-
-## 6) A/B/C sinnvoll für 3 Teams/Varianten nutzen
-Empfehlung:
-- A = Baseline
-- B = Variante „streng“
-- C = Variante „operativ“
-
-Pro Ansicht:
-- Filter nur für diese Ansicht setzen
-- Preset speichern (`Filteransicht speichern (JSON)`)
-- CSV + ZIP exportieren
-
-Wichtig:
-- Filter-Presets sind UI/Analyse-Zustand.
-- Entscheidungslogik liegt im Kriterien-Set.
-
-## 7) Unterschiede zwischen Versionen nachvollziehen
-Praktischer Ablauf:
-
-1. Version 1 aktivieren (`baseline_v1.json`), Ergebnis exportieren.
-2. Version 2 aktivieren, Ergebnis exportieren.
-3. Vergleich über:
-- Anzahl Zeilen in Prio
-- Tabelle `Ausgeschlossen durch Kriterien-Set`
-- Verteilung `prio_stage` / `prio_substage`
-- Summenanzeigen nach Bereich/Standort
-
-Zusatzempfehlung:
-- Im Dateinamen Ziel und Annahme kodieren, z. B.:
-  - `v4_no_easy_medium_shutdown.json`
-  - `v5_shutdown_with_len34.json`
-
-## 8) Gedankengang dokumentieren (für Dritte)
-Für jede neue Kriterien-Version kurz festhalten:
-- Hypothese: Was soll diese Version verbessern?
-- Regeländerung: Was wurde konkret geändert?
-- Erwarteter Effekt: Mehr/weniger Zeilen, welche Gruppen betroffen?
-- Ergebnis: Was ist tatsächlich passiert?
-- Entscheidung: Übernehmen / Verwerfen / Nächste Iteration
-
-Das kann in:
-- `To Do und vorgehen Logik.md`
-- oder separater `runs/` Notiz je Runde
-
-## 9) Typische Stolperfallen
-- Oben im Builder wird nicht automatisch die komplette Tabelle unten „rückwärts geladen“: Builder ist primär Erzeugung/Update.
-- Nach Regeländerung immer klicken:
-  - `Übersteuerungs-Regel hinzufügen/aktualisieren` oder `Regel ... hinzufügen`
-  - danach `Kriterien-Version speichern`
-- Wenn Wirkung fehlt: prüfen, ob richtiges `Aktives Kriterien-Set` gewählt ist.
-
-## 10) Export
-Pro Filteransicht:
-- CSV
-- ZIP (CSV + Filterzustand)
-
-Standort-Analyse:
-- CSV
-- ZIP
-
-Für Freigabe/Review immer beilegen:
-- verwendete CSV-Version
-- Kriterien-Set-Dateiname
-- Exportdatum
-
-## 11) Neuer Tab: Vergleich
-Im Tab `Vergleich` kannst du 2 Kriterien-Sets direkt gegeneinander rechnen:
-- `Version A` wählen
-- `Version B` wählen
-
-Du siehst:
-- Kennzahlenvergleich mit Delta (`in_prio`, `excluded`, `P1`, `P2`, `P3`, `unterbruch`)
-- Unterschiedsliste auf Zeilenebene (pro `Asset ID`):
-  - Status A/B
-  - Prio A/B
-  - Sub-Prio A/B
-  - Unterbruch A/B
-
-Damit kannst du für Dritte transparent zeigen:
-- was sich geändert hat
-- wie stark es sich geändert hat
-- welche konkreten Messstellen betroffen sind
-
-
-## 12) Bedeutet `assign_prio` Ausschluss?
-Nein.
-
-- `assign_prio`:
-  - Zeile bleibt in der Liste (`in_prio`).
-  - Es werden nur Markierungen gesetzt, z. B.:
-    - `prio_stage` (P1/P2/P3)
-    - `prio_substage` (z. B. 1A)
-    - `unterbruch_erforderlich`
-
-- `exclude_from_prio`:
-  - Zeile fliegt aus der aktiven Prio-Liste raus.
-  - Zeile erscheint in `Ausgeschlossen durch Kriterien-Set` mit Grund.
+3. Referenzlisten (QC)
+- externe Ausschlüsse
+- können in Regeln berücksichtigt werden
 
 Merksatz:
-- `assign_prio` = "drin lassen und einstufen"
-- `exclude_from_prio` = "rausnehmen"
+- **Filteransicht** = „Wie schaue ich auf die Daten?“
+- **Kriterien-Set** = „Wie entscheide ich verbindlich?“
 
-Prüfhinweis:
-Wenn sich nur Prio-Markierungen ändern, bleibt die Zeilenanzahl gleich. Das ist korrekt.
+## 4) Datenquelle richtig nutzen
+In der Sidebar unter `Datenquelle`:
+- vorhandene CSV wählen
+- oder neue CSV hochladen
+
+### Was bedeutet „optional im Projekt speichern“?
+Wenn aktiv:
+- die hochgeladene Datei wird nach `data/` geschrieben
+- du kannst sie später wieder auswählen
+- sinnvoll für reproduzierbare Analysen
+
+Wenn nicht aktiv:
+- Datei ist nur temporär für diese Session
+- beim Neustart ist sie weg
+
+Empfehlung für Teamarbeit:
+- wichtige Datenstände immer speichern
+- Dateiname mit Datum/Version, z. B.:
+  - `Labeling_KAU_2026-05-26_v1.csv`
+  - `Labeling_KAU_2026-05-26_v2_qcfix.csv`
+
+## 5) Unterschiedliche Analysen sauber trennen
+Verwende feste Rollen für die Tabs:
+- A = Baseline
+- B = Strenge Variante
+- C = Operative Variante
+
+Pro Ansicht:
+- `Ansichtszweck` ausfüllen (kurz, 1 Satz)
+- `Filter-Zusammenfassung (auto)` als Schnellcheck nutzen
+- bei Bedarf Preset speichern
+
+### Empfohlenes Benennungsschema
+Für Kriterien-Sets:
+- `v01_baseline.json`
+- `v02_streng_interval.json`
+- `v03_shutdown_focus.json`
+
+Für Presets:
+- `A_baseline_fokus.json`
+- `B_interval_11_cut.json`
+- `C_operativ_peaks.json`
+
+## 6) Was ist nachvollziehbar dokumentiert?
+Nachvollziehbar heißt:
+- Welcher CSV-Datenstand?
+- Welches aktive Kriterien-Set?
+- Welche Regeln haben gegriffen?
+- Welche Zeilen wurden ausgeschlossen und warum?
+
+In der App sichtbar über:
+- `matched_rule_ids`
+- `exclude_reasons`
+- `prio_stage`, `prio_substage`
+- `unterbruch_erforderlich`
+- Tab `Vergleich`
+
+## 7) Standard-Workflow pro Analyse-Runde
+
+### Schritt A: Ausgangslage festhalten
+- Datenquelle wählen
+- aktives Kriterien-Set notieren
+- Ziel der Runde in `Ansichtszweck` eintragen
+
+### Schritt B: Baseline prüfen
+- in A ohne Änderungen prüfen: Anzahl, Summen, Ausschlüsse
+
+### Schritt C: Eine Änderung je Iteration
+- nur einen Regelblock ändern
+- sonst weiß man später nicht, was den Effekt verursacht hat
+
+### Schritt D: Speichern
+- `Kriterien-Version speichern`
+- sprechender Dateiname
+
+### Schritt E: Wirkung prüfen
+- in A/B/C: Zeilenzahl, Prio-Verteilung, Ausschlüsse
+- im Tab `Vergleich`: alte vs neue Version
+
+### Schritt F: Entscheidung dokumentieren
+- Hypothese
+- tatsächlicher Effekt
+- Entscheidung (behalten/verwerfen)
+
+## 8) `assign_prio` vs `exclude_from_prio`
+
+- `assign_prio`
+  - Zeile bleibt in `in_prio`
+  - bekommt Markierungen (z. B. `P1`, `1A`, Unterbruch)
+
+- `exclude_from_prio`
+  - Zeile wird aus aktiver Prio-Liste entfernt
+  - erscheint in `Ausgeschlossen durch Kriterien-Set`
+
+Deshalb kann die Zeilenzahl gleich bleiben, obwohl Regeln wirken (wenn nur `assign_prio` genutzt wird).
+
+## 9) Regelbeispiele
+
+### Beispiel 1: Go-Live-Logik
+- `Interval < 12`
+- `months_from_golive >= 0`
+- `months_from_golive <= 5`
+- Aktion: `assign_prio`
+
+### Beispiel 2: Kurze IDs raus, außer schwer zugänglich
+- Regel A: `asset_id_length <= 34 AND REGEX schwer|sehr\s*schwer` -> `assign_prio P1`, `substage=1A`
+- Regel B: `asset_id_length <= 34 AND NOT(REGEX schwer|sehr\s*schwer)` -> `exclude_from_prio`
+
+## 10) Typische Stolperfallen
+- `(kein Kriterien-Set)` aktiv: dann greifen keine Kriterienregeln
+- Regel hinzugefügt, aber nicht gespeichert: nach Neustart weg
+- Falsche Spalte in Regel (z. B. `Asset ID <= 34` statt `asset_id_length <= 34`)
+- `assign_prio` erwartet Zeilenreduktion (falsch)
+
+## 11) Vergleich-Tab richtig nutzen
+Im Tab `Vergleich`:
+- Version A und B wählen
+- Kennzahlen-Deltas prüfen
+- Unterschiedsliste pro `Asset ID` prüfen
+
+Damit siehst du:
+- welche konkrete Regeländerung welchen Effekt hatte
+- welche Messstellen Status/Prio geändert haben
+
+## 12) Phasenplan und Kapazität
+Sidebar `Kapazität`:
+- Minuten/Messstelle normal
+- Minuten/Messstelle mittel
+- Puffer %
+- Personenanzahl
+- Stunden/Person/Tag
+
+Tab `Phasenplan` zeigt:
+- Anzahl pro Phase/Prio
+- Aufwand
+- Personentage
+- Wochenbedarf
+
+## 13) QC-Ausschlüsse: zwei Wege
+
+### Weg A (in der App)
+- QC-Excel laden
+- QC-Ausschlussregeln anwenden
+
+### Weg B (stabiler für Team)
+- Ausschlussspalten direkt in Basis-CSV pflegen, z. B.:
+  - `exclude_qc_self` (TRUE/FALSE)
+  - `exclude_reason`
+- dann per Kriterienregel direkt auf diese Spalten gehen
+
+Vorteil: kein separater Upload nötig, reproduzierbarer Datenstand.
+
+## 14) Mini-Protokollvorlage pro Version
+Für jede neue Kriterien-Version kurz notieren:
+- Ziel:
+- Änderung:
+- Erwartung:
+- Ergebnis:
+- Entscheidung:
+
+Beispiel:
+- Ziel: kurze IDs ohne harte Zugänglichkeit ausschließen
+- Änderung: Regel `exclude_short_not_hard` hinzugefügt
+- Erwartung: weniger in_prio, mehr in Ausschlussliste
+- Ergebnis: in_prio -1200, P1A +280
+- Entscheidung: behalten
+
+## 15) Schneller Check für Neulinge (vor Freigabe)
+1. Ist das richtige Kriterien-Set aktiv?
+2. Ist `(kein Kriterien-Set)` sicher nicht ausgewählt?
+3. Sind Änderungen gespeichert (Datei in `criteria_sets/`)?
+4. Wurden A/B über `Vergleich` gegengeprüft?
+5. Sind Ausschlüsse mit Grund sichtbar?
+
+
+## 16) Szenario-Logik ändern (einfach, auch für Nicht-Profis)
+
+### Wann brauche ich ein Szenario?
+Wenn sich eine fachliche Annahme ändert, z. B.:
+- "Kriterium `>30 Zeichen` ist doch nicht relevant"
+- "Zugänglichkeit muss stärker gewichtet werden"
+- "Intervall-Ausnahme soll gelockert werden"
+
+Ziel: nicht das alte Set kaputt machen, sondern eine neue Vergleichsversion erzeugen.
+
+### Schritt-für-Schritt (Klickpfad)
+1. Sidebar `Kriterien > Aktives Kriterien-Set` auf das aktuelle Referenz-Set stellen.
+2. Tab `Kriterien` öffnen.
+3. Die relevante Regel suchen:
+   - entweder über `Regel entfernen` (wenn komplett weg)
+   - oder in der Tabelle in `when` / `active` anpassen (wenn nur ändern)
+4. Unten bei `Dateiname für neue Version` neuen Namen vergeben:
+   - Beispiel: `v08_no_len30_assumption.json`
+5. `Kriterien-Version speichern` klicken.
+6. Sidebar prüfen: neues Set aktiv.
+7. Tab `Vergleich` öffnen:
+   - `Version A` = vorherige Version
+   - `Version B` = neue Szenario-Version
+8. Wirkung prüfen:
+   - Delta `in_prio`, `excluded`
+   - Delta P-Stufen
+   - geänderte Zeilenliste
+9. Tab `Phasenplan` prüfen:
+   - Personentage / Wochenbedarf
+10. Ergebnis kurz dokumentieren (siehe Punkt 14 Vorlage).
+
+### Beispiel: "`>30 Zeichen` nicht mehr relevant"
+Auswirkung in der Logik:
+- Bedingungen mit `ms_legacy_class == MS_legacy_krit` entfernen oder deaktivieren.
+
+Praktisch:
+- Entweder alle betroffenen Regeln löschen und mit neuer Logik neu anlegen
+- Oder in jeder betroffenen Regel das `when` so ändern, dass die Legacy-Bedingung entfällt.
+
+Danach:
+- als neue Version speichern
+- im Vergleich gegen alte Version rechnen
+
+### Einfache Entscheidungsregel für Teams
+Pro Szenario genau 1 Änderungskategorie:
+- nur Legacy-Logik
+- oder nur Zugänglichkeits-Logik
+- oder nur Intervall-/Zeitlogik
+
+Warum?
+- Sonst ist später nicht klar, welche Änderung den Effekt verursacht hat.
+
+### Minimaler Qualitätscheck vor Freigabe
+- richtige CSV geladen?
+- richtiges Kriterien-Set aktiv?
+- Version gespeichert?
+- Vergleich A/B durchgeführt?
+- Ausschlussgründe plausibel?
+- Kapazitätsauswirkung geprüft?
+
+
+## 17) Manuelle Overrides (Einzelfälle)
+Wenn einzelne Messstellen nicht sauber über allgemeine Regeln abbildbar sind:
+
+Lade eine separate CSV unter:
+- Sidebar `Referenzlisten` -> `Manuelle Overrides (CSV)`
+- Entweder CSV hochladen + `Override-Liste einlesen`
+- Oder direkt im eingebauten Tabelleneditor pflegen und `Override-Liste speichern`
+
+Datei wird im Projekt gespeichert unter:
+- `reference_lists/manual_overrides.csv`
+
+### Format der Override-CSV
+Pflichtspalte:
+- `Asset ID`
+
+Optionale Spalten:
+- `override_action` (`assign_prio` oder `exclude_from_prio`)
+- `override_prio` (z. B. `P1`, `P2A`, `P4`)
+- `override_substage` (z. B. `1A`)
+- `override_reason` (Begründung)
+- `override_shutdown` (`true/false`)
+
+### Wirkung
+- Overrides werden nach den normalen Kriterienregeln angewendet (haben Vorrang).
+- Damit sind gezielte Ausnahmen nachvollziehbar und wiederholbar.

@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 import zipfile
 
 import pandas as pd
+import numpy as np
 import streamlit as st
 from openpyxl import load_workbook
 
@@ -167,6 +168,7 @@ def is_forbidden_widget_key(key: str) -> bool:
         or key.endswith("_activate_sidebar")
         or key.endswith("_pending_preset_state")
         or key.endswith("_preset_loaded_msg")
+        or key.endswith("_summary_preview")
     )
 
 
@@ -251,62 +253,191 @@ def load_qc_green_assets_from_xlsx(path_str: str, color_hex: str, asset_col_name
     return sorted(set(assets))
 
 
+
+
+
+
+def empty_override_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "Asset ID",
+            "override_action",
+            "override_prio",
+            "override_substage",
+            "override_reason",
+            "override_shutdown",
+        ]
+    )
+
+def normalize_override_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Asset ID", "override_action", "override_prio", "override_substage", "override_reason", "override_shutdown"])
+
+    out = pd.DataFrame()
+    cols = {c.strip().lower(): c for c in df.columns}
+
+    def pick(*names):
+        for n in names:
+            if n.lower() in cols:
+                return cols[n.lower()]
+        return None
+
+    asset_col = pick("Asset ID", "asset_id", "assetid")
+    action_col = pick("override_action", "action")
+    prio_col = pick("override_prio", "prio", "priority")
+    sub_col = pick("override_substage", "substage", "prio_substage")
+    reason_col = pick("override_reason", "reason")
+    shutdown_col = pick("override_shutdown", "unterbruch_erforderlich", "shutdown")
+
+    if not asset_col:
+        return pd.DataFrame(columns=["Asset ID", "override_action", "override_prio", "override_substage", "override_reason", "override_shutdown"])
+
+    out["Asset ID"] = df[asset_col].astype("string").str.strip()
+    out["override_action"] = df[action_col].astype("string").str.strip().str.lower() if action_col else "assign_prio"
+    out["override_prio"] = df[prio_col].astype("string").str.strip().str.upper() if prio_col else "P1"
+    out["override_substage"] = df[sub_col].astype("string").str.strip() if sub_col else ""
+    out["override_reason"] = df[reason_col].astype("string").str.strip() if reason_col else "Manueller Override"
+    if shutdown_col:
+        out["override_shutdown"] = df[shutdown_col].astype("string").str.strip().str.lower().isin(["1", "true", "yes", "ja"])
+    else:
+        out["override_shutdown"] = False
+
+    out = out[out["Asset ID"].notna() & (out["Asset ID"] != "")]
+    return out.drop_duplicates(subset=["Asset ID"], keep="last")
+
 def list_criteria_sets() -> List[Path]:
     return sorted(CRITERIA_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def default_criteria_set() -> Dict[str, Any]:
     return {
-        "name": "baseline_v1",
+        "name": "kau_ms_relabeling_v1",
         "version": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
-        "notes": "Initiales Kriterien-Set",
+        "notes": "KAU MS Relabeling Standardlogik",
         "rules": [
             {
-                "id": "interval_gt_10",
+                "id": "exclude_qc_scope",
                 "active": True,
-                "type": "numeric_gt",
-                "column": "Interval",
-                "value": 10,
                 "action": "exclude_from_prio",
-                "reason": "Intervall > 10 Monate",
+                "reason": "QC/ITOT separat ausgeschlossen oder durch QC selbst zu labeln",
+                "when": {"op": "==", "column": "qc_scope_status", "value": "QC_PE_excluded"},
             },
             {
-                "id": "asset_id_len_lt_34",
-                "active": True,
-                "type": "string_length_lt",
-                "column": "Asset ID",
-                "value": 34,
-                "action": "exclude_from_prio",
-                "reason": "Asset ID unter 34 Zeichen",
-            },
-            {
-                "id": "qc_self_labeled",
-                "active": True,
-                "type": "ref_list_match",
-                "column": "Asset ID",
-                "ref_list": "qc_self_labeled_assets",
-                "action": "exclude_from_prio",
-                "reason": "Wird durch QC selbst gelabelt",
-            },
-            {
-                "id": "prio1_due_soon",
+                "id": "prio_p1_shutdown_scope",
                 "active": True,
                 "action": "assign_prio",
                 "priority": "P1",
-                "reason": "Due Date ist kurzfristig",
-                "when": {"op": "<=", "column": "months_until_due", "value": 1.0},
-            },
-            {
-                "id": "prio2_within_interval_half",
-                "active": True,
-                "action": "assign_prio",
-                "priority": "P2",
-                "reason": "Due Date liegt innerhalb Intervall/2",
+                "relabel_phase": "Shutdown_26",
+                "unterbruch_erforderlich": True,
+                "recommended_window": "31.07.2026-20.08.2026",
+                "reason": "Lange Legacy-ID, nächste Kalibrierung im Scope, schwer zugänglich",
                 "when": {
                     "op": "AND",
                     "conditions": [
-                        {"op": ">", "column": "months_until_due", "value": 1.0},
-                        {"op": "<=", "column": "months_until_due", "value_col": "interval_half_months"},
+                        {"op": "IN", "column": "time_class", "values": ["T0_Immediate", "MS_Time_iScope"]},
+                        {"op": "==", "column": "ms_legacy_class", "value": "MS_legacy_krit"},
+                        {"op": "==", "column": "access_class", "value": "ABC"},
+                    ],
+                },
+            },
+            {
+                "id": "prio_p2_easy_scope",
+                "active": True,
+                "action": "assign_prio",
+                "priority": "P2",
+                "relabel_phase": "PostgL_bis_Oktober",
+                "unterbruch_erforderlich": False,
+                "recommended_window": "20.08.2026-31.10.2026",
+                "reason": "Lange Legacy-ID, nächste Kalibrierung im Scope, einfach zugänglich",
+                "when": {
+                    "op": "AND",
+                    "conditions": [
+                        {"op": "IN", "column": "time_class", "values": ["T0_Immediate", "MS_Time_iScope"]},
+                        {"op": "==", "column": "ms_legacy_class", "value": "MS_legacy_krit"},
+                        {"op": "==", "column": "access_class", "value": "easy"},
+                    ],
+                },
+            },
+            {
+                "id": "prio_p2_review_access",
+                "active": True,
+                "action": "assign_prio",
+                "priority": "P2",
+                "priority_substage": "review_access",
+                "relabel_phase": "Klaerung_Zugaenglichkeit",
+                "reason": "Lange Legacy-ID und im Scope, Zugänglichkeit unklar",
+                "when": {
+                    "op": "AND",
+                    "conditions": [
+                        {"op": "IN", "column": "time_class", "values": ["T0_Immediate", "MS_Time_iScope"]},
+                        {"op": "==", "column": "ms_legacy_class", "value": "MS_legacy_krit"},
+                        {"op": "==", "column": "access_class", "value": "unknown"},
+                    ],
+                },
+            },
+            {
+                "id": "prio_p3_shutdown_27",
+                "active": True,
+                "action": "assign_prio",
+                "priority": "P3",
+                "relabel_phase": "Shutdown_27",
+                "unterbruch_erforderlich": True,
+                "recommended_window": "Januar 2027",
+                "reason": "Nicht sofort fällig, aber schwer zugänglich und lange Legacy-ID",
+                "when": {
+                    "op": "AND",
+                    "conditions": [
+                        {"op": "==", "column": "time_class", "value": "MS_Time_Long"},
+                        {"op": "==", "column": "ms_legacy_class", "value": "MS_legacy_krit"},
+                        {"op": "==", "column": "access_class", "value": "ABC"},
+                    ],
+                },
+            },
+            {
+                "id": "prio_p2a_postgl",
+                "active": True,
+                "action": "assign_prio",
+                "priority": "P2A",
+                "relabel_phase": "PostgL_bis_Januar",
+                "recommended_window": "01.11.2026-31.01.2027",
+                "reason": "Lange Legacy-ID, einfach zugänglich, nach Kapazität bis Januar",
+                "when": {
+                    "op": "AND",
+                    "conditions": [
+                        {"op": "==", "column": "time_class", "value": "MS_Time_Long"},
+                        {"op": "==", "column": "ms_legacy_class", "value": "MS_legacy_krit"},
+                        {"op": "==", "column": "access_class", "value": "easy"},
+                    ],
+                },
+            },
+            {
+                "id": "prio_p4_opportunistic",
+                "active": True,
+                "action": "assign_prio",
+                "priority": "P4",
+                "relabel_phase": "opportunistisch_Shutdown",
+                "unterbruch_erforderlich": True,
+                "reason": "Legacy-ID handhabbar, aber schwer zugänglich; nur opportunistisch mitnehmen",
+                "when": {
+                    "op": "AND",
+                    "conditions": [
+                        {"op": "==", "column": "ms_legacy_class", "value": "MS_legacy_iO"},
+                        {"op": "==", "column": "access_class", "value": "ABC"},
+                    ],
+                },
+            },
+            {
+                "id": "prio_p5_backlog",
+                "active": True,
+                "action": "assign_prio",
+                "priority": "P5",
+                "relabel_phase": "Backlog_optional",
+                "reason": "Legacy-ID handhabbar und einfach zugänglich; keine Prio 1",
+                "when": {
+                    "op": "AND",
+                    "conditions": [
+                        {"op": "==", "column": "ms_legacy_class", "value": "MS_legacy_iO"},
+                        {"op": "==", "column": "access_class", "value": "easy"},
                     ],
                 },
             },
@@ -315,12 +446,13 @@ def default_criteria_set() -> Dict[str, Any]:
 
 
 def ensure_default_criteria_file() -> Path:
+    default_path = CRITERIA_DIR / "kau_ms_relabeling_v1.json"
+    if not default_path.exists():
+        default_path.write_text(json.dumps(default_criteria_set(), ensure_ascii=False, indent=2), encoding="utf-8")
     existing = list_criteria_sets()
-    if existing:
-        return existing[0]
-    p = CRITERIA_DIR / "baseline_v1.json"
-    p.write_text(json.dumps(default_criteria_set(), ensure_ascii=False, indent=2), encoding="utf-8")
-    return p
+    if not existing:
+        return default_path
+    return default_path if default_path in existing else existing[0]
 
 
 def load_criteria(path_str: str) -> Dict[str, Any]:
@@ -467,6 +599,14 @@ def evaluate_condition(df: pd.DataFrame, cond: Dict[str, Any], reference_lists: 
         except re.error:
             return pd.Series([False] * len(df), index=df.index)
 
+    if op == "IN":
+        values = cond.get("values", [])
+        if not isinstance(values, list):
+            values = [values]
+        left_text = df[col].astype("string").str.strip()
+        norm_vals = [str(v).strip() for v in values]
+        return left_text.isin(norm_vals)
+
     if op == "IN_REF_LIST":
         ref_name = str(cond.get("ref_list", "")).strip()
         ref_values = reference_lists.get(ref_name, set())
@@ -523,10 +663,13 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
     reason_col = pd.Series([""] * len(working), index=working.index, dtype="string")
     rule_col = pd.Series([""] * len(working), index=working.index, dtype="string")
     exclude_mask = pd.Series([False] * len(working), index=working.index)
-    prio_stage = pd.Series(["P3"] * len(working), index=working.index, dtype="string")
+    prio_stage = pd.Series(["P6"] * len(working), index=working.index, dtype="string")
     prio_substage = pd.Series(["" ] * len(working), index=working.index, dtype="string")
-    prio_rank = pd.Series([3] * len(working), index=working.index, dtype="int64")
+    prio_rank = pd.Series([6.0] * len(working), index=working.index, dtype="float64")
     shutdown_required = pd.Series([False] * len(working), index=working.index)
+    relabel_phase = pd.Series(["" for _ in range(len(working))], index=working.index, dtype="string")
+    recommended_window = pd.Series(["" for _ in range(len(working))], index=working.index, dtype="string")
+    decision_reason = pd.Series(["" for _ in range(len(working))], index=working.index, dtype="string")
 
     for raw_rule in criteria.get("rules", []):
         rule = normalize_rule(raw_rule)
@@ -582,16 +725,24 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
             rule_col.loc[mask] = (rule_col.loc[mask] + "; " + rid).str.strip("; ")
         elif action == "assign_prio":
             target = str(rule.get("priority", "P3")).upper()
-            target_rank = {"P1": 1, "P2": 2, "P3": 3}.get(target, 3)
+            target_rank = {"P1": 1.0, "P2": 2.0, "P2A": 2.5, "P3": 3.0, "P4": 4.0, "P5": 5.0, "P6": 6.0}.get(target, 6.0)
             upgrade = mask.fillna(False) & (target_rank < prio_rank)
             prio_rank.loc[upgrade] = target_rank
             prio_stage.loc[upgrade] = target
             rule_col.loc[upgrade] = (rule_col.loc[upgrade] + "; " + rid).str.strip("; ")
-            if bool(rule.get("mark_shutdown", False)):
+            if bool(rule.get("mark_shutdown", False)) or bool(rule.get("unterbruch_erforderlich", False)):
                 shutdown_required.loc[mask.fillna(False)] = True
-            substage = str(rule.get("priority_substage", "")).strip()
+            substage = str(rule.get("priority_substage", rule.get("substage", ""))).strip()
             if substage:
                 prio_substage.loc[mask.fillna(False)] = substage
+            phase = str(rule.get("relabel_phase", rule.get("phase", ""))).strip()
+            if phase:
+                relabel_phase.loc[upgrade] = phase
+            window = str(rule.get("recommended_window", "")).strip()
+            if window:
+                recommended_window.loc[upgrade] = window
+            if reason:
+                decision_reason.loc[upgrade] = reason
 
     excluded = working[exclude_mask].copy()
     excluded["decision_status"] = "excluded"
@@ -599,15 +750,21 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
     excluded["matched_rule_ids"] = rule_col.loc[exclude_mask].fillna("")
     excluded["prio_stage"] = "excluded"
     excluded["prio_substage"] = ""
+    excluded["relabel_phase"] = "excluded"
+    excluded["recommended_window"] = ""
     excluded["unterbruch_erforderlich"] = shutdown_required.loc[exclude_mask].fillna(False)
+    excluded["decision_reason"] = reason_col.loc[exclude_mask].fillna("")
 
     included = working[~exclude_mask].copy()
     included["decision_status"] = "in_prio"
     included["exclude_reasons"] = ""
     included["matched_rule_ids"] = rule_col.loc[~exclude_mask].fillna("")
-    included["prio_stage"] = prio_stage.loc[~exclude_mask].fillna("P3")
+    included["prio_stage"] = prio_stage.loc[~exclude_mask].fillna("P6")
     included["prio_substage"] = prio_substage.loc[~exclude_mask].fillna("")
+    included["relabel_phase"] = relabel_phase.loc[~exclude_mask].fillna("")
+    included["recommended_window"] = recommended_window.loc[~exclude_mask].fillna("")
     included["unterbruch_erforderlich"] = shutdown_required.loc[~exclude_mask].fillna(False)
+    included["decision_reason"] = decision_reason.loc[~exclude_mask].fillna("")
     return included, excluded
 
 
@@ -1216,6 +1373,7 @@ def apply_filters(df: pd.DataFrame, prefix: str, show_sidebar_filters: bool) -> 
     st.session_state[f"{prefix}_criteria_excluded_df"] = excluded_rules
 
     sync_store_from_session(prefix)
+    touch_view_timestamp(prefix)
     return filtered
 
 
@@ -1317,8 +1475,88 @@ def render_summary(df: pd.DataFrame, prefix: str) -> None:
     )
 
 
+
+def _short_list(vals: List[Any], max_items: int = 3) -> str:
+    items = [str(v) for v in vals if str(v).strip()]
+    if not items:
+        return ""
+    if len(items) <= max_items:
+        return ", ".join(items)
+    return ", ".join(items[:max_items]) + f" (+{len(items)-max_items})"
+
+
+def build_view_summary(df: pd.DataFrame, prefix: str) -> str:
+    state = get_filter_store(prefix)
+    parts: List[str] = []
+
+    inc = str(state.get(f"{prefix}_regex_include", "")).strip()
+    exc = str(state.get(f"{prefix}_regex_exclude", "")).strip()
+    rcol = str(state.get(f"{prefix}_regex_col", "")).strip()
+    if rcol and (inc or exc):
+        if inc:
+            parts.append(f"Regex+ {rcol}: {inc}")
+        if exc:
+            parts.append(f"Regex- {rcol}: {exc}")
+
+    text_cols = get_text_columns(df)
+    cat_hits = []
+    for col in text_cols:
+        sel = state.get(f"{prefix}_cat_{col}", [])
+        if isinstance(sel, list) and sel:
+            cat_hits.append(f"{col}={_short_list(sel, 2)}")
+    if cat_hits:
+        parts.append("Kat " + " | ".join(cat_hits[:3]))
+
+    ncols = state.get(f"{prefix}_num_cols", [])
+    if isinstance(ncols, list) and ncols:
+        num_desc = []
+        for col in ncols[:3]:
+            rng = state.get(f"{prefix}_num_rng_{col}")
+            if isinstance(rng, (list, tuple)) and len(rng) == 2:
+                num_desc.append(f"{col}:[{rng[0]}..{rng[1]}]")
+            else:
+                num_desc.append(str(col))
+        parts.append("Num " + " | ".join(num_desc))
+
+    dcol = state.get(f"{prefix}_date_col")
+    dr = state.get(f"{prefix}_date_range")
+    if dcol and dcol != "(kein Filter)" and isinstance(dr, (list, tuple)) and len(dr) == 2:
+        parts.append(f"Datum {dcol}: {dr[0]}..{dr[1]}")
+
+    criteria = st.session_state.get("active_criteria_set", {})
+    cname = str(criteria.get("name", ""))
+    if cname and cname != "none":
+        parts.append(f"Kriterien: {cname}")
+    else:
+        parts.append("Kriterien: keine")
+
+    return " | ".join(parts) if parts else "Keine aktiven Filter"
+
+
+def touch_view_timestamp(prefix: str) -> None:
+    st.session_state[f"{prefix}_last_changed"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def render_view(df: pd.DataFrame, view_name: str, prefix: str, active_prefix: str) -> None:
     st.markdown(f"### {view_name}")
+    cmeta1, cmeta2 = st.columns([3, 2])
+    with cmeta1:
+        purpose = st.text_input(
+            "Ansichtszweck",
+            value=st.session_state.get(f"{prefix}_purpose", ""),
+            placeholder="z.B. P1A-Unterbruch Fokus Verpackung_PE",
+            key=f"{prefix}_purpose",
+        )
+    with cmeta2:
+        st.text_input(
+            "Filter-Zusammenfassung (auto)",
+            value=build_view_summary(df, prefix),
+            key=f"{prefix}_summary_preview",
+            disabled=True,
+        )
+    if f"{prefix}_last_changed" not in st.session_state:
+        touch_view_timestamp(prefix)
+    st.caption(f"Zuletzt geändert: {st.session_state.get(f'{prefix}_last_changed','-')}")
     if st.button("Diese Ansicht links bearbeiten", key=f"{prefix}_activate_sidebar"):
         st.session_state["pending_active_prefix"] = prefix
         st.rerun()
@@ -1810,6 +2048,62 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
 
 
 
+
+
+def render_decision_tree() -> None:
+    st.markdown("### Entscheidungsbaum")
+    st.markdown(
+        """
+1. Scope bestimmen: `qc_scope_status`
+2. QC-Ausschluss: `QC_PE_excluded` -> Ausschluss
+3. Zeitklasse: `time_class` (`T0_Immediate`, `MS_Time_iScope`, `MS_Time_Long`)
+4. Legacy-Klasse: `ms_legacy_class` (`MS_legacy_krit`/`MS_legacy_iO`)
+5. Zugänglichkeit: `access_class` (`ABC`/`easy`/`unknown`)
+6. Ergebnis: `prio_stage`, `prio_substage`, `relabel_phase`, `recommended_window`, `unterbruch_erforderlich`
+        """
+    )
+
+
+def render_prio_matrix(df: pd.DataFrame) -> None:
+    st.markdown("### Prio-Matrix")
+    cols = ["time_class", "access_class", "ms_legacy_class"]
+    if not all(c in df.columns for c in cols):
+        st.info("Benötigte Klassenspalten fehlen.")
+        return
+    matrix = pd.pivot_table(df, index=["time_class", "access_class"], columns="ms_legacy_class", aggfunc="size", fill_value=0)
+    st.dataframe(matrix, use_container_width=True, height=420)
+
+
+def render_exclusions(df_ex: pd.DataFrame) -> None:
+    st.markdown("### Ausschlüsse")
+    if df_ex is None or df_ex.empty:
+        st.info("Keine Ausschlüsse im aktuellen Kriterien-Set.")
+        return
+    cols = [c for c in ["Asset ID", "Gebäude / MU", "Standort", "exclude_reasons", "matched_rule_ids"] if c in df_ex.columns]
+    view = df_ex[cols] if cols else df_ex
+    st.dataframe(view, use_container_width=True, height=500, column_config=build_column_config(view, allow_manual_edit=False))
+
+
+def render_phase_plan(df_in: pd.DataFrame) -> None:
+    st.markdown("### Phasenplan")
+    if df_in is None or df_in.empty or "relabel_phase" not in df_in.columns:
+        st.info("Keine priorisierten Daten für Phasenplan vorhanden.")
+        return
+
+    min_normal = float(st.session_state.get("cap_min_normal", 7))
+    min_medium = float(st.session_state.get("cap_min_medium", 12))
+    buffer_pct = float(st.session_state.get("cap_buffer_pct", 30))
+    persons = float(st.session_state.get("cap_persons", 2))
+    hours_day = float(st.session_state.get("cap_hours_day", 7))
+
+    grp = df_in.groupby(["relabel_phase", "prio_stage"], dropna=False).size().reset_index(name="anzahl_messstellen")
+    grp["aufwand_7min"] = grp["anzahl_messstellen"] * min_normal
+    grp["aufwand_12min"] = grp["anzahl_messstellen"] * min_medium
+    grp["aufwand_plus_puffer_min"] = grp["aufwand_12min"] * (1 + buffer_pct / 100.0)
+    grp["personentage"] = grp["aufwand_plus_puffer_min"] / (persons * hours_day * 60.0)
+    grp["wochenbedarf"] = grp["personentage"] / 5.0
+    st.dataframe(grp, use_container_width=True, height=420, column_config=build_column_config(grp, allow_manual_edit=False))
+
 def render_criteria_comparison(df: pd.DataFrame) -> None:
     st.markdown("### Kriterien-Vergleich")
     criteria_files = list_criteria_sets()
@@ -1837,7 +2131,11 @@ def render_criteria_comparison(df: pd.DataFrame) -> None:
             "excluded": int(len(ex_df)),
             "P1": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P1").sum()),
             "P2": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P2").sum()),
+            "P2A": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P2A").sum()),
             "P3": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P3").sum()),
+            "P4": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P4").sum()),
+            "P5": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P5").sum()),
+            "P6": int((in_df.get("prio_stage", pd.Series(dtype='string')) == "P6").sum()),
             "unterbruch": int((in_df.get("unterbruch_erforderlich", pd.Series(dtype='bool')) == True).sum()),
         }
 
@@ -1845,7 +2143,7 @@ def render_criteria_comparison(df: pd.DataFrame) -> None:
     m2 = metrics(right_in, right_ex)
 
     rows = []
-    for k in ["in_prio", "excluded", "P1", "P2", "P3", "unterbruch"]:
+    for k in ["in_prio", "excluded", "P1", "P2", "P2A", "P3", "P4", "P5", "P6", "unterbruch"]:
         rows.append({"kennzahl": k, "A": m1[k], "B": m2[k], "delta_B_minus_A": m2[k] - m1[k]})
     cmp_df = pd.DataFrame(rows)
     st.dataframe(cmp_df, use_container_width=True, height=260, column_config=build_column_config(cmp_df, allow_manual_edit=False))
@@ -1918,7 +2216,20 @@ def main() -> None:
                 st.session_state["qc_green_source"] = str(qc_csv)
             except Exception:
                 pass
+        ov_csv = REF_DIR / "manual_overrides.csv"
+        if ov_csv.exists():
+            try:
+                ov_raw = pd.read_csv(ov_csv)
+                st.session_state["manual_overrides_df"] = normalize_override_rows(ov_raw)
+                st.session_state["manual_overrides_source"] = str(ov_csv)
+            except Exception:
+                pass
         st.session_state["criteria_initialized"] = True
+
+
+    st.sidebar.header("Hilfe")
+    st.sidebar.markdown("[ANLEITUNG öffnen](./ANLEITUNG.md)")
+    st.sidebar.markdown("[KLICKANLEITUNG öffnen](./KLICKANLEITUNG.md)")
 
     st.sidebar.header("Datenquelle")
     with st.sidebar.expander("CSV Auswahl / Upload", expanded=False):
@@ -1964,6 +2275,51 @@ def main() -> None:
             st.caption(f"Aktive QC-Liste: {len(st.session_state.get('qc_green_assets', []))} Asset IDs")
             if st.session_state.get("qc_green_source"):
                 st.caption(f"Quelle: {st.session_state['qc_green_source']}")
+
+    with st.sidebar.expander("Manuelle Overrides (CSV)", expanded=False):
+        st.caption("Kleine Ausnahmeliste für Einzelfälle. Spalten: Asset ID, override_action, override_prio, override_substage, override_reason, override_shutdown")
+        ov_file = st.file_uploader("Override-CSV hochladen", type=["csv"], key="override_csv_upload")
+        if ov_file is not None and st.button("Override-Liste einlesen", key="override_load_btn"):
+            ov_path = REF_DIR / "manual_overrides.csv"
+            ov_path.write_bytes(ov_file.getvalue())
+            ov_raw = pd.read_csv(ov_path)
+            ov_norm = normalize_override_rows(ov_raw)
+            st.session_state["manual_overrides_df"] = ov_norm
+            st.session_state["manual_overrides_source"] = str(ov_path)
+            st.success(f"Override-Liste geladen: {len(ov_norm)} Assets")
+
+        if "manual_overrides_df" not in st.session_state or st.session_state.get("manual_overrides_df") is None:
+            st.session_state["manual_overrides_df"] = empty_override_table()
+
+        st.caption("Direkt hier pflegen: Zeilen hinzufügen/ändern und speichern.")
+        edit_df = st.data_editor(
+            st.session_state.get("manual_overrides_df", empty_override_table()),
+            key="override_editor",
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "override_action": st.column_config.SelectboxColumn(options=["assign_prio", "exclude_from_prio"]),
+                "override_prio": st.column_config.SelectboxColumn(options=["", "P1", "P2", "P2A", "P3", "P4", "P5", "P6"]),
+                "override_shutdown": st.column_config.CheckboxColumn(),
+            },
+        )
+        c_ov1, c_ov2 = st.columns(2)
+        if c_ov1.button("Override-Liste übernehmen", key="override_apply_btn"):
+            ov_norm = normalize_override_rows(edit_df)
+            st.session_state["manual_overrides_df"] = ov_norm
+            st.success(f"Override-Liste übernommen: {len(ov_norm)} Assets")
+        if c_ov2.button("Override-Liste speichern", key="override_save_btn"):
+            ov_path = REF_DIR / "manual_overrides.csv"
+            ov_norm = normalize_override_rows(edit_df)
+            ov_norm.to_csv(ov_path, index=False)
+            st.session_state["manual_overrides_df"] = ov_norm
+            st.session_state["manual_overrides_source"] = str(ov_path)
+            st.success(f"Gespeichert: {ov_path}")
+
+        ov_df = st.session_state.get("manual_overrides_df", empty_override_table())
+        st.caption(f"Aktive Override-Liste: {len(ov_df)} Assets")
+        if st.session_state.get("manual_overrides_source"):
+            st.caption(f"Quelle: {st.session_state['manual_overrides_source']}")
 
     if "selected_path" not in locals() or not selected_path:
         st.info("Bitte CSV in der Sidebar auswählen oder hochladen.")
@@ -2017,6 +2373,14 @@ def main() -> None:
             st.session_state["active_criteria_set"] = load_criteria(selected_criteria_path)
             st.rerun()
 
+
+    st.sidebar.header("Kapazität")
+    st.sidebar.number_input("Minuten/Messstelle normal", min_value=1.0, value=float(st.session_state.get("cap_min_normal", 7)), key="cap_min_normal")
+    st.sidebar.number_input("Minuten/Messstelle mittel", min_value=1.0, value=float(st.session_state.get("cap_min_medium", 12)), key="cap_min_medium")
+    st.sidebar.number_input("Puffer %", min_value=0.0, value=float(st.session_state.get("cap_buffer_pct", 30)), key="cap_buffer_pct")
+    st.sidebar.number_input("Personenanzahl", min_value=1.0, value=float(st.session_state.get("cap_persons", 2)), key="cap_persons")
+    st.sidebar.number_input("Stunden pro Person/Tag", min_value=1.0, value=float(st.session_state.get("cap_hours_day", 7)), key="cap_hours_day")
+
     df = load_csv_from_path(selected_path)
     render_live_criteria_sidebar(df)
 
@@ -2031,7 +2395,10 @@ def main() -> None:
     st.subheader("Spalten der aktuellen CSV")
     st.write(list(df.columns))
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse", "Kriterien", "Vergleich"])
+    ref_lists = {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))}
+    criteria_all_in, criteria_all_ex = apply_criteria_rules(df.copy(), st.session_state.get("active_criteria_set", {}), ref_lists)
+
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse", "Kriterien", "Vergleich", "Entscheidungsbaum", "Phasenplan", "Prio-Matrix", "Ausschlüsse"])
     with tab1:
         render_view(df, "Filteransicht A", "view_a", active_prefix)
     with tab2:
@@ -2044,6 +2411,14 @@ def main() -> None:
         render_criteria_editor(df)
     with tab6:
         render_criteria_comparison(df)
+    with tab7:
+        render_decision_tree()
+    with tab8:
+        render_phase_plan(criteria_all_in)
+    with tab9:
+        render_prio_matrix(criteria_all_in)
+    with tab10:
+        render_exclusions(criteria_all_ex)
 
 
 if __name__ == "__main__":
