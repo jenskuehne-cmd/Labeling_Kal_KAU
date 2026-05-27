@@ -1989,61 +1989,140 @@ def render_golive_hint() -> None:
     st.caption("Für deinen Fall im Builder setzen: Interval < 12 UND months_from_golive >= 0 UND months_from_golive <= 5")
 
 
+TAB_HELP: Dict[str, Dict[str, List[str]]] = {
+    "criteria": {
+        "Was ist der Zweck?": [
+            "Hier wird die offizielle Entscheidungslogik gepflegt.",
+            "Regeln bleiben erst dauerhaft erhalten, wenn eine Kriterien-Version gespeichert wird.",
+        ],
+        "Wichtige Begriffe": [
+            "assign_prio: Zeile bleibt drin und bekommt eine Prio.",
+            "exclude_from_prio: Zeile wird aus der Prio-Liste entfernt und in Ausschlüsse gezeigt.",
+            "when: Bedingung der Regel, z. B. AND/OR/NOT mit Spaltenvergleichen.",
+        ],
+        "Typischer Ablauf": [
+            "Eine Regelidee ändern, Regel hinzufügen, neue Version speichern, dann im Vergleich prüfen.",
+            "Für Ausnahmen einzelne Assets besser über Manuelle Overrides pflegen.",
+        ],
+    },
+    "decision_tree": {
+        "Was sehe ich hier?": [
+            "Die Reihenfolge der automatischen Klassifikation von Scope bis Prio.",
+            "Diese Stufen erklären, warum eine Messstelle P1, P2A, P4 usw. wird.",
+        ],
+        "Abkürzungen": [
+            "ms_legacy_class: Einordnung über Asset-ID-Länge.",
+            "MS_legacy_krit: Asset ID länger als 30 Zeichen.",
+            "MS_legacy_iO: Asset ID bis 30 Zeichen.",
+            "access_class ABC: schwer/Zone/Reinraum/Stillstand oder ähnliche Hinweise.",
+            "access_class easy: einfach/jederzeit/Technikbereich/Labor/D-Zone.",
+            "time_class: zeitliche Lage aus Due Date, Intervall und Go-Live.",
+        ],
+    },
+    "phase_plan": {
+        "Was sehe ich hier?": [
+            "Mengen und Aufwand je Relabeling-Phase und Prio.",
+            "Die Berechnung nutzt die Kapazitätswerte aus der Sidebar.",
+        ],
+        "So lesen": [
+            "Personentage zeigen Aufwand mit Puffer und Teamgröße.",
+            "Wochenbedarf rechnet Personentage in Arbeitswochen um.",
+        ],
+    },
+    "prio_matrix": {
+        "Was sehe ich hier?": [
+            "Eine Kreuztabelle aus Zeitklasse, Zugänglichkeit und Legacy-Klasse.",
+            "Gut zur Plausibilitätsprüfung vor Diskussionen mit Fachbereichen.",
+        ],
+        "Prüffragen": [
+            "Sind viele unknown-Zugänglichkeiten vorhanden?",
+            "Gibt es viele kritische Legacy-IDs außerhalb des Zeitfensters?",
+        ],
+    },
+    "exclusions": {
+        "Was sehe ich hier?": [
+            "Alle Messstellen, die durch Kriterien ausgeschlossen wurden.",
+            "Wichtig sind exclude_reasons und matched_rule_ids.",
+        ],
+        "Prüffragen": [
+            "Ist der Ausschlussgrund fachlich verständlich?",
+            "Sind QC/ITOT-Ausschlüsse korrekt separiert?",
+        ],
+    },
+}
+
+
+def render_context_help(help_key: str) -> None:
+    content = TAB_HELP.get(help_key, {})
+    st.markdown("#### Hilfe zu diesem Tab")
+    if not content:
+        st.caption("Keine tab-spezifische Hilfe hinterlegt.")
+        return
+    for title, lines in content.items():
+        with st.expander(title, expanded=True):
+            for line in lines:
+                st.caption(f"- {line}")
+
+
 def render_criteria_editor(df: pd.DataFrame) -> None:
-    st.markdown("### Kriterien-Set")
-    render_golive_hint()
-    render_prio34_shutdown_recipe(df)
-    render_rule_builder(df)
-    criteria = st.session_state.get("active_criteria_set", default_criteria_set())
-    st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
-    if criteria.get("name") == "none":
-        st.info("Kein Kriterien-Set aktiv. Es werden nur manuelle Filter angewendet.")
-    st.text_area("Notizen", value=str(criteria.get("notes", "")), key="criteria_notes")
+    main_col, help_col = st.columns([4, 1.35])
+    with main_col:
+        st.markdown("### Kriterien-Set")
+        render_golive_hint()
+        render_prio34_shutdown_recipe(df)
+        render_rule_builder(df)
+        criteria = st.session_state.get("active_criteria_set", default_criteria_set())
+        st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
+        if criteria.get("name") == "none":
+            st.info("Kein Kriterien-Set aktiv. Es werden nur manuelle Filter angewendet.")
+        st.text_area("Notizen", value=str(criteria.get("notes", "")), key="criteria_notes")
 
-    rules = criteria.get("rules", [])
-    rules_df = pd.DataFrame(rules if rules else [default_criteria_set()["rules"][0]])
-    edited_rules = st.data_editor(
-        rules_df,
-        use_container_width=True,
-        num_rows="dynamic",
-        key="criteria_rules_editor",
-    )
+        rules = criteria.get("rules", [])
+        rules_df = pd.DataFrame(rules if rules else [default_criteria_set()["rules"][0]])
+        edited_rules = st.data_editor(
+            rules_df,
+            use_container_width=True,
+            num_rows="dynamic",
+            key="criteria_rules_editor",
+        )
 
-    c1, c2 = st.columns([2, 1])
-    filename = c1.text_input("Dateiname für neue Version", value=f"{criteria.get('name', 'criteria')}_{datetime.now().strftime('%Y%m%d_%H%M')}.json", key="criteria_save_name")
-    if c2.button("Kriterien-Version speichern", key="criteria_save_btn"):
-        filename_raw = st.session_state.get("criteria_save_name", "").strip()
-        stem_name = Path(filename_raw).stem if filename_raw else "criteria_set"
-        current_name = str(criteria.get("name", "")).strip()
-        effective_name = stem_name if current_name in {"", "none"} else current_name
+        c1, c2 = st.columns([2, 1])
+        filename = c1.text_input("Dateiname für neue Version", value=f"{criteria.get('name', 'criteria')}_{datetime.now().strftime('%Y%m%d_%H%M')}.json", key="criteria_save_name")
+        if c2.button("Kriterien-Version speichern", key="criteria_save_btn"):
+            filename_raw = st.session_state.get("criteria_save_name", "").strip()
+            stem_name = Path(filename_raw).stem if filename_raw else "criteria_set"
+            current_name = str(criteria.get("name", "")).strip()
+            effective_name = stem_name if current_name in {"", "none"} else current_name
 
-        new_set = {
-            "name": effective_name,
-            "version": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
-            "notes": st.session_state.get("criteria_notes", ""),
-            "rules": edited_rules.fillna("").to_dict(orient="records"),
-        }
-        target = save_criteria(new_set, filename)
-        st.session_state["active_criteria_set"] = new_set
-        st.session_state["active_criteria_path"] = str(target)
-        st.success(f"Gespeichert und aktiviert: {target}")
+            new_set = {
+                "name": effective_name,
+                "version": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+                "notes": st.session_state.get("criteria_notes", ""),
+                "rules": edited_rules.fillna("").to_dict(orient="records"),
+            }
+            target = save_criteria(new_set, filename)
+            st.session_state["active_criteria_set"] = new_set
+            st.session_state["active_criteria_path"] = str(target)
+            st.success(f"Gespeichert und aktiviert: {target}")
 
-    st.caption("Regeltypen: numeric_gt, string_length_lt, regex_match, date_between, ref_list_match oder when-Block mit AND/OR/NOT")
-    st.caption("Action: exclude_from_prio oder assign_prio (priority: P1/P2/P3)")
+        st.caption("Regeltypen: numeric_gt, string_length_lt, regex_match, date_between, ref_list_match oder when-Block mit AND/OR/NOT")
+        st.caption("Action: exclude_from_prio oder assign_prio (priority: P1/P2/P3)")
 
-    with st.expander("Aktives Kriterien-Set (JSON Vorschau)", expanded=False):
-        st.code(json.dumps(criteria, ensure_ascii=False, indent=2), language="json")
+        with st.expander("Aktives Kriterien-Set (JSON Vorschau)", expanded=False):
+            st.code(json.dumps(criteria, ensure_ascii=False, indent=2), language="json")
 
-    st.markdown("#### Regel entfernen")
-    ids = [str(r.get("id", "")) for r in criteria.get("rules", []) if str(r.get("id", "")).strip()]
-    if ids:
-        col_del_1, col_del_2 = st.columns([3, 1])
-        rid = col_del_1.selectbox("Regel-ID", ids, key="criteria_delete_rule_id")
-        if col_del_2.button("Regel löschen", key="criteria_delete_rule_btn"):
-            delete_rule_by_id(criteria, rid)
-            st.session_state["active_criteria_set"] = criteria
-            st.success(f"Regel gelöscht: {rid}. Danach Kriterien-Version speichern.")
-            st.rerun()
+        st.markdown("#### Regel entfernen")
+        ids = [str(r.get("id", "")) for r in criteria.get("rules", []) if str(r.get("id", "")).strip()]
+        if ids:
+            col_del_1, col_del_2 = st.columns([3, 1])
+            rid = col_del_1.selectbox("Regel-ID", ids, key="criteria_delete_rule_id")
+            if col_del_2.button("Regel löschen", key="criteria_delete_rule_btn"):
+                delete_rule_by_id(criteria, rid)
+                st.session_state["active_criteria_set"] = criteria
+                st.success(f"Regel gelöscht: {rid}. Danach Kriterien-Version speichern.")
+                st.rerun()
+    with help_col:
+        render_context_help("criteria")
 
 
 
@@ -2051,58 +2130,73 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
 
 
 def render_decision_tree() -> None:
-    st.markdown("### Entscheidungsbaum")
-    st.markdown(
-        """
+    main_col, help_col = st.columns([4, 1.35])
+    with main_col:
+        st.markdown("### Entscheidungsbaum")
+        st.markdown(
+            """
 1. Scope bestimmen: `qc_scope_status`
 2. QC-Ausschluss: `QC_PE_excluded` -> Ausschluss
 3. Zeitklasse: `time_class` (`T0_Immediate`, `MS_Time_iScope`, `MS_Time_Long`)
 4. Legacy-Klasse: `ms_legacy_class` (`MS_legacy_krit`/`MS_legacy_iO`)
 5. Zugänglichkeit: `access_class` (`ABC`/`easy`/`unknown`)
 6. Ergebnis: `prio_stage`, `prio_substage`, `relabel_phase`, `recommended_window`, `unterbruch_erforderlich`
-        """
-    )
+            """
+        )
+    with help_col:
+        render_context_help("decision_tree")
 
 
 def render_prio_matrix(df: pd.DataFrame) -> None:
-    st.markdown("### Prio-Matrix")
-    cols = ["time_class", "access_class", "ms_legacy_class"]
-    if not all(c in df.columns for c in cols):
-        st.info("Benötigte Klassenspalten fehlen.")
-        return
-    matrix = pd.pivot_table(df, index=["time_class", "access_class"], columns="ms_legacy_class", aggfunc="size", fill_value=0)
-    st.dataframe(matrix, use_container_width=True, height=420)
+    main_col, help_col = st.columns([4, 1.35])
+    with main_col:
+        st.markdown("### Prio-Matrix")
+        cols = ["time_class", "access_class", "ms_legacy_class"]
+        if not all(c in df.columns for c in cols):
+            st.info("Benötigte Klassenspalten fehlen.")
+        else:
+            matrix = pd.pivot_table(df, index=["time_class", "access_class"], columns="ms_legacy_class", aggfunc="size", fill_value=0)
+            st.dataframe(matrix, use_container_width=True, height=420)
+    with help_col:
+        render_context_help("prio_matrix")
 
 
 def render_exclusions(df_ex: pd.DataFrame) -> None:
-    st.markdown("### Ausschlüsse")
-    if df_ex is None or df_ex.empty:
-        st.info("Keine Ausschlüsse im aktuellen Kriterien-Set.")
-        return
-    cols = [c for c in ["Asset ID", "Gebäude / MU", "Standort", "exclude_reasons", "matched_rule_ids"] if c in df_ex.columns]
-    view = df_ex[cols] if cols else df_ex
-    st.dataframe(view, use_container_width=True, height=500, column_config=build_column_config(view, allow_manual_edit=False))
+    main_col, help_col = st.columns([4, 1.35])
+    with main_col:
+        st.markdown("### Ausschlüsse")
+        if df_ex is None or df_ex.empty:
+            st.info("Keine Ausschlüsse im aktuellen Kriterien-Set.")
+        else:
+            cols = [c for c in ["Asset ID", "Gebäude / MU", "Standort", "exclude_reasons", "matched_rule_ids"] if c in df_ex.columns]
+            view = df_ex[cols] if cols else df_ex
+            st.dataframe(view, use_container_width=True, height=500, column_config=build_column_config(view, allow_manual_edit=False))
+    with help_col:
+        render_context_help("exclusions")
 
 
 def render_phase_plan(df_in: pd.DataFrame) -> None:
-    st.markdown("### Phasenplan")
-    if df_in is None or df_in.empty or "relabel_phase" not in df_in.columns:
-        st.info("Keine priorisierten Daten für Phasenplan vorhanden.")
-        return
+    main_col, help_col = st.columns([4, 1.35])
+    with main_col:
+        st.markdown("### Phasenplan")
+        if df_in is None or df_in.empty or "relabel_phase" not in df_in.columns:
+            st.info("Keine priorisierten Daten für Phasenplan vorhanden.")
+        else:
+            min_normal = float(st.session_state.get("cap_min_normal", 7))
+            min_medium = float(st.session_state.get("cap_min_medium", 12))
+            buffer_pct = float(st.session_state.get("cap_buffer_pct", 30))
+            persons = float(st.session_state.get("cap_persons", 2))
+            hours_day = float(st.session_state.get("cap_hours_day", 7))
 
-    min_normal = float(st.session_state.get("cap_min_normal", 7))
-    min_medium = float(st.session_state.get("cap_min_medium", 12))
-    buffer_pct = float(st.session_state.get("cap_buffer_pct", 30))
-    persons = float(st.session_state.get("cap_persons", 2))
-    hours_day = float(st.session_state.get("cap_hours_day", 7))
-
-    grp = df_in.groupby(["relabel_phase", "prio_stage"], dropna=False).size().reset_index(name="anzahl_messstellen")
-    grp["aufwand_7min"] = grp["anzahl_messstellen"] * min_normal
-    grp["aufwand_12min"] = grp["anzahl_messstellen"] * min_medium
-    grp["aufwand_plus_puffer_min"] = grp["aufwand_12min"] * (1 + buffer_pct / 100.0)
-    grp["personentage"] = grp["aufwand_plus_puffer_min"] / (persons * hours_day * 60.0)
-    grp["wochenbedarf"] = grp["personentage"] / 5.0
-    st.dataframe(grp, use_container_width=True, height=420, column_config=build_column_config(grp, allow_manual_edit=False))
+            grp = df_in.groupby(["relabel_phase", "prio_stage"], dropna=False).size().reset_index(name="anzahl_messstellen")
+            grp["aufwand_7min"] = grp["anzahl_messstellen"] * min_normal
+            grp["aufwand_12min"] = grp["anzahl_messstellen"] * min_medium
+            grp["aufwand_plus_puffer_min"] = grp["aufwand_12min"] * (1 + buffer_pct / 100.0)
+            grp["personentage"] = grp["aufwand_plus_puffer_min"] / (persons * hours_day * 60.0)
+            grp["wochenbedarf"] = grp["personentage"] / 5.0
+            st.dataframe(grp, use_container_width=True, height=420, column_config=build_column_config(grp, allow_manual_edit=False))
+    with help_col:
+        render_context_help("phase_plan")
 
 def render_criteria_comparison(df: pd.DataFrame) -> None:
     st.markdown("### Kriterien-Vergleich")
