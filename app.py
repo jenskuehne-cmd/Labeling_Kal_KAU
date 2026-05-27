@@ -2198,6 +2198,25 @@ def render_criteria_comparison(df: pd.DataFrame) -> None:
     show_cols = [id_col, "status_A", "status_B", "prio_A", "prio_B", "subprio_A", "subprio_B", "unterbruch_A", "unterbruch_B"]
     st.dataframe(changed[show_cols], use_container_width=True, height=360, column_config=build_column_config(changed[show_cols], allow_manual_edit=False))
 
+
+
+def render_help_docs() -> None:
+    st.markdown("### Hilfe & Anleitung")
+    guide = BASE_DIR / "ANLEITUNG.md"
+    click_guide = BASE_DIR / "KLICKANLEITUNG.md"
+
+    t1, t2 = st.tabs(["ANLEITUNG", "KLICKANLEITUNG"])
+    with t1:
+        if guide.exists():
+            st.markdown(guide.read_text(encoding="utf-8"))
+        else:
+            st.warning(f"Nicht gefunden: {guide}")
+    with t2:
+        if click_guide.exists():
+            st.markdown(click_guide.read_text(encoding="utf-8"))
+        else:
+            st.warning(f"Nicht gefunden: {click_guide}")
+
 def main() -> None:
     apply_custom_style()
     sanitize_filter_stores()
@@ -2228,8 +2247,7 @@ def main() -> None:
 
 
     st.sidebar.header("Hilfe")
-    st.sidebar.markdown("[ANLEITUNG öffnen](./ANLEITUNG.md)")
-    st.sidebar.markdown("[KLICKANLEITUNG öffnen](./KLICKANLEITUNG.md)")
+    st.sidebar.caption("Anleitungen findest du im Tab 'Hilfe & Anleitung'.")
 
     st.sidebar.header("Datenquelle")
     with st.sidebar.expander("CSV Auswahl / Upload", expanded=False):
@@ -2398,7 +2416,7 @@ def main() -> None:
     ref_lists = {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))}
     criteria_all_in, criteria_all_ex = apply_criteria_rules(df.copy(), st.session_state.get("active_criteria_set", {}), ref_lists)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse", "Kriterien", "Vergleich", "Entscheidungsbaum", "Phasenplan", "Prio-Matrix", "Ausschlüsse"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse", "Kriterien", "Vergleich", "Entscheidungsbaum", "Phasenplan", "Prio-Matrix", "Ausschlüsse", "Hilfe & Anleitung"])
     with tab1:
         render_view(df, "Filteransicht A", "view_a", active_prefix)
     with tab2:
@@ -2419,6 +2437,8 @@ def main() -> None:
         render_prio_matrix(criteria_all_in)
     with tab10:
         render_exclusions(criteria_all_ex)
+    with tab11:
+        render_help_docs()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,27 @@
+{
+  "name": "test_v1_20260511_2204",
+  "version": "2026-05-11_222048",
+  "notes": "Initiales Kriterien-Set",
+  "rules": [
+    {
+      "id": "prio1_asset_len_gt_threshold",
+      "active": true,
+      "action": "assign_prio",
+      "priority": "P1",
+      "reason": "Asset-ID länger als 34 Zeichen",
+      "when": "{'op': '>', 'column': 'asset_id_length', 'value': 34.0}",
+      "priority_substage": "",
+      "mark_shutdown": ""
+    },
+    {
+      "id": "prio1a_short_but_hard_access",
+      "active": true,
+      "action": "assign_prio",
+      "priority": "P1",
+      "reason": "<= 34 Zeichen, aber schwer zugänglich: Relabeling nur bei Unterbruch",
+      "when": "{'op': 'AND', 'conditions': [{'op': '<=', 'column': 'asset_id_length', 'value': 34.0}, {'op': 'REGEX', 'column': 'Zugänglichkeit ', 'pattern': 'schwer|sehr\\\\s*schwer'}]}",
+      "priority_substage": "1A",
+      "mark_shutdown": "True"
+    }
+  ]
+}

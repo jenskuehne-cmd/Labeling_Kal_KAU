@@ -1,0 +1,222 @@
+{
+  "name": "kau_ms_relabeling_v1",
+  "version": "2026-05-26_083827",
+  "notes": "KAU MS Relabeling Standardlogik",
+  "rules": [
+    {
+      "id": "exclude_qc_scope",
+      "active": true,
+      "action": "exclude_from_prio",
+      "reason": "QC/ITOT separat ausgeschlossen oder durch QC selbst zu labeln",
+      "when": {
+        "op": "==",
+        "column": "qc_scope_status",
+        "value": "QC_PE_excluded"
+      }
+    },
+    {
+      "id": "prio_p1_shutdown_scope",
+      "active": true,
+      "action": "assign_prio",
+      "priority": "P1",
+      "relabel_phase": "Shutdown_26",
+      "unterbruch_erforderlich": true,
+      "recommended_window": "31.07.2026-20.08.2026",
+      "reason": "Lange Legacy-ID, nächste Kalibrierung im Scope, schwer zugänglich",
+      "when": {
+        "op": "AND",
+        "conditions": [
+          {
+            "op": "IN",
+            "column": "time_class",
+            "values": [
+              "T0_Immediate",
+              "MS_Time_iScope"
+            ]
+          },
+          {
+            "op": "==",
+            "column": "ms_legacy_class",
+            "value": "MS_legacy_krit"
+          },
+          {
+            "op": "==",
+            "column": "access_class",
+            "value": "ABC"
+          }
+        ]
+      }
+    },
+    {
+      "id": "prio_p2_easy_scope",
+      "active": true,
+      "action": "assign_prio",
+      "priority": "P2",
+      "relabel_phase": "PostgL_bis_Oktober",
+      "unterbruch_erforderlich": false,
+      "recommended_window": "20.08.2026-31.10.2026",
+      "reason": "Lange Legacy-ID, nächste Kalibrierung im Scope, einfach zugänglich",
+      "when": {
+        "op": "AND",
+        "conditions": [
+          {
+            "op": "IN",
+            "column": "time_class",
+            "values": [
+              "T0_Immediate",
+              "MS_Time_iScope"
+            ]
+          },
+          {
+            "op": "==",
+            "column": "ms_legacy_class",
+            "value": "MS_legacy_krit"
+          },
+          {
+            "op": "==",
+            "column": "access_class",
+            "value": "easy"
+          }
+        ]
+      }
+    },
+    {
+      "id": "prio_p2_review_access",
+      "active": true,
+      "action": "assign_prio",
+      "priority": "P2",
+      "priority_substage": "review_access",
+      "relabel_phase": "Klaerung_Zugaenglichkeit",
+      "reason": "Lange Legacy-ID und im Scope, Zugänglichkeit unklar",
+      "when": {
+        "op": "AND",
+        "conditions": [
+          {
+            "op": "IN",
+            "column": "time_class",
+            "values": [
+              "T0_Immediate",
+              "MS_Time_iScope"
+            ]
+          },
+          {
+            "op": "==",
+            "column": "ms_legacy_class",
+            "value": "MS_legacy_krit"
+          },
+          {
+            "op": "==",
+            "column": "access_class",
+            "value": "unknown"
+          }
+        ]
+      }
+    },
+    {
+      "id": "prio_p3_shutdown_27",
+      "active": true,
+      "action": "assign_prio",
+      "priority": "P3",
+      "relabel_phase": "Shutdown_27",
+      "unterbruch_erforderlich": true,
+      "recommended_window": "Januar 2027",
+      "reason": "Nicht sofort fällig, aber schwer zugänglich und lange Legacy-ID",
+      "when": {
+        "op": "AND",
+        "conditions": [
+          {
+            "op": "==",
+            "column": "time_class",
+            "value": "MS_Time_Long"
+          },
+          {
+            "op": "==",
+            "column": "ms_legacy_class",
+            "value": "MS_legacy_krit"
+          },
+          {
+            "op": "==",
+            "column": "access_class",
+            "value": "ABC"
+          }
+        ]
+      }
+    },
+    {
+      "id": "prio_p2a_postgl",
+      "active": true,
+      "action": "assign_prio",
+      "priority": "P2A",
+      "relabel_phase": "PostgL_bis_Januar",
+      "recommended_window": "01.11.2026-31.01.2027",
+      "reason": "Lange Legacy-ID, einfach zugänglich, nach Kapazität bis Januar",
+      "when": {
+        "op": "AND",
+        "conditions": [
+          {
+            "op": "==",
+            "column": "time_class",
+            "value": "MS_Time_Long"
+          },
+          {
+            "op": "==",
+            "column": "ms_legacy_class",
+            "value": "MS_legacy_krit"
+          },
+          {
+            "op": "==",
+            "column": "access_class",
+            "value": "easy"
+          }
+        ]
+      }
+    },
+    {
+      "id": "prio_p4_opportunistic",
+      "active": true,
+      "action": "assign_prio",
+      "priority": "P4",
+      "relabel_phase": "opportunistisch_Shutdown",
+      "unterbruch_erforderlich": true,
+      "reason": "Legacy-ID handhabbar, aber schwer zugänglich; nur opportunistisch mitnehmen",
+      "when": {
+        "op": "AND",
+        "conditions": [
+          {
+            "op": "==",
+            "column": "ms_legacy_class",
+            "value": "MS_legacy_iO"
+          },
+          {
+            "op": "==",
+            "column": "access_class",
+            "value": "ABC"
+          }
+        ]
+      }
+    },
+    {
+      "id": "prio_p5_backlog",
+      "active": true,
+      "action": "assign_prio",
+      "priority": "P5",
+      "relabel_phase": "Backlog_optional",
+      "reason": "Legacy-ID handhabbar und einfach zugänglich; keine Prio 1",
+      "when": {
+        "op": "AND",
+        "conditions": [
+          {
+            "op": "==",
+            "column": "ms_legacy_class",
+            "value": "MS_legacy_iO"
+          },
+          {
+            "op": "==",
+            "column": "access_class",
+            "value": "easy"
+          }
+        ]
+      }
+    }
+  ]
+}

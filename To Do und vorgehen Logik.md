@@ -12,6 +12,9 @@
 - wenn es ein leicht erreichbar ist und ein Watchdog zB., kann man die aus der Prio Liste herausnehmen? zB Bei Batteriewechsel das Etikett anbringen?
 
 
+## Weiterentwickeln
+- wenn ich eine Auswertung habe, wie kann ich dann aus der DIskussion die Änderungen einfügen - also zB sagt TObi nmein die sind P1 . wie mache ich dann einen Vermerk und pflege es ein, als Übersteuerung oder so. auch für einen neuen Ladezyklus oder Szenario.
+- kann man verschiedene Szenarien gegenüberstellen übersichtlich
 
 
 
