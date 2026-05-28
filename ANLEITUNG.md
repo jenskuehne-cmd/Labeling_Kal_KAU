@@ -359,3 +359,21 @@ Kurzregel:
 - Filter-Preset JSON = konkrete Ansicht dokumentieren
 - Kriterien-Set JSON = fachliche Logik versionieren
 - Override-CSV = dauerhafte Einzelfallentscheidung dokumentieren
+
+## 19) Sidebar-Arbeitsmodus
+Die linke Sidebar ist bewusst nicht automatisch an den aktiven Tab gekoppelt. Stattdessen gibt es oben den stabilen `Arbeitsmodus`.
+
+Warum?
+- Streamlit-Tabs sind keine echten Seiten.
+- Eine automatische Tab-Erkennung kann zu Widget- und Session-State-Konflikten führen.
+- Der Arbeitsmodus ist stabiler und macht klar, welche Bedienfelder gerade relevant sind.
+
+### Modi
+- `Filter bearbeiten`: zeigt nur Auswahl der Filteransicht und die Filterfelder für A/B/C.
+- `Daten & Referenzen`: zeigt CSV-Auswahl, Upload, QC-Grünliste, Overrides und Arbeitsstand.
+- `Kriterien & Szenarien`: zeigt Go-Live, Kriterien-Set und Live-Kriterien.
+- `Kapazität`: zeigt Aufwand- und Teamannahmen.
+- `Hilfe`: zeigt Hinweise zur Anleitung.
+
+### Wichtig
+Wenn du z. B. im Tab `Phasenplan` bist, brauchst du links meistens keine Filter. Stelle dann den Arbeitsmodus auf `Kapazität` oder `Kriterien & Szenarien`. Die Filter bleiben im Hintergrund erhalten und werden nicht gelöscht.

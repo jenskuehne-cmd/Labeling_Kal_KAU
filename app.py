@@ -250,6 +250,7 @@ def restore_last_session() -> None:
 
 def collect_persisted_session_state(selected_path: str | None) -> Dict[str, Any]:
     app_keys = [
+        "sidebar_mode",
         "active_prefix",
         "active_criteria_path",
         "golive_reference_date",
@@ -1666,7 +1667,7 @@ def render_view(df: pd.DataFrame, view_name: str, prefix: str, active_prefix: st
     if st.button("Diese Ansicht links bearbeiten", key=f"{prefix}_activate_sidebar"):
         st.session_state["pending_active_prefix"] = prefix
         st.rerun()
-    if active_prefix != prefix:
+    if active_prefix not in {"", "__none__", prefix}:
         st.caption("Hinweis: Sidebar-Filter sind aktuell auf eine andere Ansicht gesetzt.")
     if st.session_state.pop(f"{prefix}_preset_loaded_msg", False):
         st.success("Preset geladen. Ansicht aktualisiert.")
@@ -2466,195 +2467,221 @@ def main() -> None:
         st.session_state["criteria_initialized"] = True
 
 
-    st.sidebar.header("Hilfe")
-    st.sidebar.caption("Anleitungen findest du im Tab 'Hilfe & Anleitung'.")
+    st.sidebar.header("Arbeitsmodus")
+    sidebar_mode = st.sidebar.radio(
+        "Sidebar anzeigen für",
+        ["Filter bearbeiten", "Daten & Referenzen", "Kriterien & Szenarien", "Kapazität", "Hilfe"],
+        key="sidebar_mode",
+    )
 
-    st.sidebar.header("Datenquelle")
-    with st.sidebar.expander("CSV Auswahl / Upload", expanded=False):
-        csv_files = list_local_csvs()
-        selected_path = None
-        if csv_files:
-            options = {p.name: str(p) for p in csv_files}
-            option_names = list(options.keys())
-            last_csv_name = Path(str(st.session_state.get("last_selected_csv_path", ""))).name
-            default_csv_name = st.session_state.get("selected_csv_name") or last_csv_name
-            if default_csv_name not in options:
-                default_csv_name = option_names[0]
+    show_filters = sidebar_mode == "Filter bearbeiten"
+    show_data = sidebar_mode == "Daten & Referenzen"
+    show_criteria = sidebar_mode == "Kriterien & Szenarien"
+    show_capacity = sidebar_mode == "Kapazität"
+    show_help = sidebar_mode == "Hilfe"
+
+    csv_files = list_local_csvs()
+    selected_path = None
+    csv_options = {p.name: str(p) for p in csv_files}
+    csv_option_names = list(csv_options.keys())
+    if csv_option_names:
+        last_csv_name = Path(str(st.session_state.get("last_selected_csv_path", ""))).name
+        default_csv_name = st.session_state.get("selected_csv_name") or last_csv_name
+        if default_csv_name not in csv_options:
+            default_csv_name = csv_option_names[0]
+        if "selected_csv_name" not in st.session_state or st.session_state["selected_csv_name"] not in csv_options:
             st.session_state["selected_csv_name"] = default_csv_name
-            selected_name = st.selectbox(
-                "Aktuelle CSV",
-                option_names,
-                index=option_names.index(default_csv_name),
-                key="selected_csv_name",
-            )
-            selected_path = options[selected_name]
-            st.session_state["last_selected_csv_path"] = selected_path
-            st.caption(f"Pfad: {selected_path}")
-        else:
-            st.info("Noch keine lokale CSV in /data vorhanden.")
+        selected_path = csv_options[st.session_state["selected_csv_name"]]
+        st.session_state["last_selected_csv_path"] = selected_path
 
-        uploaded_file = st.file_uploader("Neue CSV hochladen", type=["csv"], key="csv_upload")
-        if uploaded_file is not None:
-            keep_uploaded = st.checkbox("Hochgeladene CSV im Projekt speichern", value=True)
-            if keep_uploaded:
-                filename = st.text_input("Dateiname", value=uploaded_file.name)
-                if st.button("CSV speichern und verwenden"):
-                    target = DATA_DIR / Path(filename).name
-                    target.write_bytes(uploaded_file.getvalue())
-                    st.success(f"Gespeichert: {target}")
-                    st.rerun()
-            else:
-                temp_path = DATA_DIR / "_temp_upload.csv"
-                temp_path.write_bytes(uploaded_file.getvalue())
-                selected_path = str(temp_path)
+    if show_help:
+        st.sidebar.header("Hilfe")
+        st.sidebar.caption("Anleitungen findest du im Tab 'Hilfe & Anleitung'.")
+        st.sidebar.caption("Die rechte Hilfe-Spalte in komplexen Tabs erklärt die wichtigsten Begriffe direkt im Kontext.")
+
+    if show_data:
+        st.sidebar.header("Datenquelle")
+        with st.sidebar.expander("CSV Auswahl / Upload", expanded=True):
+            if csv_option_names:
+                selected_name = st.selectbox(
+                    "Aktuelle CSV",
+                    csv_option_names,
+                    index=csv_option_names.index(st.session_state["selected_csv_name"]),
+                    key="selected_csv_name",
+                )
+                selected_path = csv_options[selected_name]
                 st.session_state["last_selected_csv_path"] = selected_path
+                st.caption(f"Pfad: {selected_path}")
+            else:
+                st.info("Noch keine lokale CSV in /data vorhanden.")
 
-    st.sidebar.header("Referenzlisten")
-    with st.sidebar.expander("QC-Grünliste (Excel)", expanded=False):
-        qc_file = st.file_uploader("QC-Excel hochladen", type=["xlsx"], key="qc_excel_upload")
-        qc_color = st.text_input("Grün-Farbcode", value="FF92D050", key="qc_green_color")
-        qc_asset_col = st.text_input("Asset-ID Spaltenname", value="Asset ID", key="qc_asset_col_name")
-        if qc_file is not None and st.button("QC-Liste einlesen", key="qc_load_btn"):
-            qc_path = REF_DIR / Path(qc_file.name).name
-            qc_path.write_bytes(qc_file.getvalue())
-            assets = load_qc_green_assets_from_xlsx(str(qc_path), qc_color, qc_asset_col)
-            st.session_state["qc_green_assets"] = assets
-            st.session_state["qc_green_source"] = str(qc_path)
-            pd.DataFrame({"Asset ID": assets}).to_csv(REF_DIR / "qc_self_labeled_assets.csv", index=False)
-            st.success(f"QC-Liste geladen: {len(assets)} Asset IDs")
-        if st.session_state.get("qc_green_assets") is not None:
-            st.caption(f"Aktive QC-Liste: {len(st.session_state.get('qc_green_assets', []))} Asset IDs")
-            if st.session_state.get("qc_green_source"):
-                st.caption(f"Quelle: {st.session_state['qc_green_source']}")
+            uploaded_file = st.file_uploader("Neue CSV hochladen", type=["csv"], key="csv_upload")
+            if uploaded_file is not None:
+                keep_uploaded = st.checkbox("Hochgeladene CSV im Projekt speichern", value=True)
+                if keep_uploaded:
+                    filename = st.text_input("Dateiname", value=uploaded_file.name)
+                    if st.button("CSV speichern und verwenden"):
+                        target = DATA_DIR / Path(filename).name
+                        target.write_bytes(uploaded_file.getvalue())
+                        st.success(f"Gespeichert: {target}")
+                        st.rerun()
+                else:
+                    temp_path = DATA_DIR / "_temp_upload.csv"
+                    temp_path.write_bytes(uploaded_file.getvalue())
+                    selected_path = str(temp_path)
+                    st.session_state["last_selected_csv_path"] = selected_path
 
-    with st.sidebar.expander("Manuelle Overrides (CSV)", expanded=False):
-        st.caption("Kleine Ausnahmeliste für Einzelfälle. Spalten: Asset ID, override_action, override_prio, override_substage, override_reason, override_shutdown")
-        ov_file = st.file_uploader("Override-CSV hochladen", type=["csv"], key="override_csv_upload")
-        if ov_file is not None and st.button("Override-Liste einlesen", key="override_load_btn"):
-            ov_path = REF_DIR / "manual_overrides.csv"
-            ov_path.write_bytes(ov_file.getvalue())
-            ov_raw = pd.read_csv(ov_path)
-            ov_norm = normalize_override_rows(ov_raw)
-            st.session_state["manual_overrides_df"] = ov_norm
-            st.session_state["manual_overrides_source"] = str(ov_path)
-            st.success(f"Override-Liste geladen: {len(ov_norm)} Assets")
+        st.sidebar.header("Referenzlisten")
+        with st.sidebar.expander("QC-Grünliste (Excel)", expanded=False):
+            qc_file = st.file_uploader("QC-Excel hochladen", type=["xlsx"], key="qc_excel_upload")
+            qc_color = st.text_input("Grün-Farbcode", value="FF92D050", key="qc_green_color")
+            qc_asset_col = st.text_input("Asset-ID Spaltenname", value="Asset ID", key="qc_asset_col_name")
+            if qc_file is not None and st.button("QC-Liste einlesen", key="qc_load_btn"):
+                qc_path = REF_DIR / Path(qc_file.name).name
+                qc_path.write_bytes(qc_file.getvalue())
+                assets = load_qc_green_assets_from_xlsx(str(qc_path), qc_color, qc_asset_col)
+                st.session_state["qc_green_assets"] = assets
+                st.session_state["qc_green_source"] = str(qc_path)
+                pd.DataFrame({"Asset ID": assets}).to_csv(REF_DIR / "qc_self_labeled_assets.csv", index=False)
+                st.success(f"QC-Liste geladen: {len(assets)} Asset IDs")
+            if st.session_state.get("qc_green_assets") is not None:
+                st.caption(f"Aktive QC-Liste: {len(st.session_state.get('qc_green_assets', []))} Asset IDs")
+                if st.session_state.get("qc_green_source"):
+                    st.caption(f"Quelle: {st.session_state['qc_green_source']}")
 
-        if "manual_overrides_df" not in st.session_state or st.session_state.get("manual_overrides_df") is None:
-            st.session_state["manual_overrides_df"] = empty_override_table()
+        with st.sidebar.expander("Manuelle Overrides (CSV)", expanded=False):
+            st.caption("Kleine Ausnahmeliste für Einzelfälle. Spalten: Asset ID, override_action, override_prio, override_substage, override_reason, override_shutdown")
+            ov_file = st.file_uploader("Override-CSV hochladen", type=["csv"], key="override_csv_upload")
+            if ov_file is not None and st.button("Override-Liste einlesen", key="override_load_btn"):
+                ov_path = REF_DIR / "manual_overrides.csv"
+                ov_path.write_bytes(ov_file.getvalue())
+                ov_raw = pd.read_csv(ov_path)
+                ov_norm = normalize_override_rows(ov_raw)
+                st.session_state["manual_overrides_df"] = ov_norm
+                st.session_state["manual_overrides_source"] = str(ov_path)
+                st.success(f"Override-Liste geladen: {len(ov_norm)} Assets")
 
-        st.caption("Direkt hier pflegen: Zeilen hinzufügen/ändern und speichern.")
-        edit_df = st.data_editor(
-            st.session_state.get("manual_overrides_df", empty_override_table()),
-            key="override_editor",
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "override_action": st.column_config.SelectboxColumn(options=["assign_prio", "exclude_from_prio"]),
-                "override_prio": st.column_config.SelectboxColumn(options=["", "P1", "P2", "P2A", "P3", "P4", "P5", "P6"]),
-                "override_shutdown": st.column_config.CheckboxColumn(),
-            },
-        )
-        c_ov1, c_ov2 = st.columns(2)
-        if c_ov1.button("Override-Liste übernehmen", key="override_apply_btn"):
-            ov_norm = normalize_override_rows(edit_df)
-            st.session_state["manual_overrides_df"] = ov_norm
-            st.success(f"Override-Liste übernommen: {len(ov_norm)} Assets")
-        if c_ov2.button("Override-Liste speichern", key="override_save_btn"):
-            ov_path = REF_DIR / "manual_overrides.csv"
-            ov_norm = normalize_override_rows(edit_df)
-            ov_norm.to_csv(ov_path, index=False)
-            st.session_state["manual_overrides_df"] = ov_norm
-            st.session_state["manual_overrides_source"] = str(ov_path)
-            st.success(f"Gespeichert: {ov_path}")
+            if "manual_overrides_df" not in st.session_state or st.session_state.get("manual_overrides_df") is None:
+                st.session_state["manual_overrides_df"] = empty_override_table()
 
-        ov_df = st.session_state.get("manual_overrides_df", empty_override_table())
-        st.caption(f"Aktive Override-Liste: {len(ov_df)} Assets")
-        if st.session_state.get("manual_overrides_source"):
-            st.caption(f"Quelle: {st.session_state['manual_overrides_source']}")
+            st.caption("Direkt hier pflegen: Zeilen hinzufügen/ändern und speichern.")
+            edit_df = st.data_editor(
+                st.session_state.get("manual_overrides_df", empty_override_table()),
+                key="override_editor",
+                num_rows="dynamic",
+                use_container_width=True,
+                column_config={
+                    "override_action": st.column_config.SelectboxColumn(options=["assign_prio", "exclude_from_prio"]),
+                    "override_prio": st.column_config.SelectboxColumn(options=["", "P1", "P2", "P2A", "P3", "P4", "P5", "P6"]),
+                    "override_shutdown": st.column_config.CheckboxColumn(),
+                },
+            )
+            c_ov1, c_ov2 = st.columns(2)
+            if c_ov1.button("Override-Liste übernehmen", key="override_apply_btn"):
+                ov_norm = normalize_override_rows(edit_df)
+                st.session_state["manual_overrides_df"] = ov_norm
+                st.success(f"Override-Liste übernommen: {len(ov_norm)} Assets")
+            if c_ov2.button("Override-Liste speichern", key="override_save_btn"):
+                ov_path = REF_DIR / "manual_overrides.csv"
+                ov_norm = normalize_override_rows(edit_df)
+                ov_norm.to_csv(ov_path, index=False)
+                st.session_state["manual_overrides_df"] = ov_norm
+                st.session_state["manual_overrides_source"] = str(ov_path)
+                st.success(f"Gespeichert: {ov_path}")
 
+            ov_df = st.session_state.get("manual_overrides_df", empty_override_table())
+            st.caption(f"Aktive Override-Liste: {len(ov_df)} Assets")
+            if st.session_state.get("manual_overrides_source"):
+                st.caption(f"Quelle: {st.session_state['manual_overrides_source']}")
+
+        with st.sidebar.expander("Arbeitsstand", expanded=False):
+            saved_at = st.session_state.get("_last_session_saved_at", "")
+            if saved_at:
+                st.caption(f"Letzter automatisch geladener Stand: {saved_at}")
+            else:
+                st.caption("Noch kein gespeicherter Arbeitsstand vorhanden.")
+            if st.session_state.get("_last_session_restore_error"):
+                st.warning(f"Wiederherstellung nicht möglich: {st.session_state['_last_session_restore_error']}")
+            if st.session_state.get("_last_session_save_error"):
+                st.warning(f"Speichern zuletzt nicht möglich: {st.session_state['_last_session_save_error']}")
+            c_state_1, c_state_2 = st.columns(2)
+            if c_state_1.button("Jetzt speichern", key="last_session_save_now"):
+                save_last_session(selected_path)
+                st.session_state["_last_session_saved_at"] = datetime.now().isoformat(timespec="seconds")
+                st.success("Arbeitsstand gespeichert.")
+            if c_state_2.button("Zurücksetzen", key="last_session_reset"):
+                reset_last_session()
+                st.session_state["_last_session_saved_at"] = ""
+                st.session_state["_skip_last_session_autosave"] = True
+                st.success("Gespeicherter Arbeitsstand gelöscht. Aktuelle Ansicht bleibt bis zum Neustart unverändert.")
     if "selected_path" not in locals() or not selected_path:
-        st.info("Bitte CSV in der Sidebar auswählen oder hochladen.")
+        st.info("Bitte CSV im Arbeitsmodus 'Daten & Referenzen' auswählen oder hochladen.")
         st.stop()
 
-    with st.sidebar.expander("Arbeitsstand", expanded=False):
-        saved_at = st.session_state.get("_last_session_saved_at", "")
-        if saved_at:
-            st.caption(f"Letzter automatisch geladener Stand: {saved_at}")
-        else:
-            st.caption("Noch kein gespeicherter Arbeitsstand vorhanden.")
-        if st.session_state.get("_last_session_restore_error"):
-            st.warning(f"Wiederherstellung nicht möglich: {st.session_state['_last_session_restore_error']}")
-        if st.session_state.get("_last_session_save_error"):
-            st.warning(f"Speichern zuletzt nicht möglich: {st.session_state['_last_session_save_error']}")
-        c_state_1, c_state_2 = st.columns(2)
-        if c_state_1.button("Jetzt speichern", key="last_session_save_now"):
-            save_last_session(selected_path)
-            st.session_state["_last_session_saved_at"] = datetime.now().isoformat(timespec="seconds")
-            st.success("Arbeitsstand gespeichert.")
-        if c_state_2.button("Zurücksetzen", key="last_session_reset"):
-            reset_last_session()
-            st.session_state["_last_session_saved_at"] = ""
-            st.session_state["_skip_last_session_autosave"] = True
-            st.success("Gespeicherter Arbeitsstand gelöscht. Aktuelle Ansicht bleibt bis zum Neustart unverändert.")
-
-    st.sidebar.header("Ansicht")
     if "pending_active_prefix" in st.session_state:
         st.session_state["active_prefix"] = st.session_state.pop("pending_active_prefix")
     if "active_prefix" not in st.session_state:
         st.session_state["active_prefix"] = "view_a"
-    active_prefix = st.sidebar.selectbox(
-        "Filter bearbeiten für",
-        options=["view_a", "view_b", "view_c"],
-        format_func=lambda x: {"view_a": "Filteransicht A", "view_b": "Filteransicht B", "view_c": "Filteransicht C"}[x],
-        key="active_prefix",
-    )
+    if show_filters:
+        st.sidebar.header("Ansicht")
+        active_prefix = st.sidebar.selectbox(
+            "Filter bearbeiten für",
+            options=["view_a", "view_b", "view_c"],
+            format_func=lambda x: {"view_a": "Filteransicht A", "view_b": "Filteransicht B", "view_c": "Filteransicht C"}[x],
+            key="active_prefix",
+        )
+    else:
+        active_prefix = st.session_state["active_prefix"]
+        st.sidebar.caption(f"Aktive Filteransicht: { {'view_a': 'A', 'view_b': 'B', 'view_c': 'C'}.get(active_prefix, active_prefix) }")
 
-    st.sidebar.header("Kriterien")
     if "golive_reference_date" not in st.session_state:
         st.session_state["golive_reference_date"] = date(2026, 8, 10)
-    st.sidebar.date_input(
-        "Go-Live Referenzdatum",
-        value=st.session_state["golive_reference_date"],
-        key="golive_reference_date",
-        help="Wird für die abgeleitete Kennzahl months_from_golive verwendet.",
-    )
-    criteria_files = list_criteria_sets()
-    if criteria_files:
-        options = {"(kein Kriterien-Set)": ""}
-        options.update({p.name: str(p) for p in criteria_files})
-
-        current_path = st.session_state.get("active_criteria_path", str(criteria_files[0]))
-        current_name = Path(current_path).name if current_path else "(kein Kriterien-Set)"
-        if current_name not in options:
-            current_name = list(options.keys())[0]
-
-        selected_criteria_name = st.sidebar.selectbox(
-            "Aktives Kriterien-Set",
-            list(options.keys()),
-            index=list(options.keys()).index(current_name),
+    if show_criteria:
+        st.sidebar.header("Kriterien")
+        st.sidebar.date_input(
+            "Go-Live Referenzdatum",
+            value=st.session_state["golive_reference_date"],
+            key="golive_reference_date",
+            help="Wird für die abgeleitete Kennzahl months_from_golive verwendet.",
         )
-        selected_criteria_path = options[selected_criteria_name]
+        criteria_files = list_criteria_sets()
+        if criteria_files:
+            options = {"(kein Kriterien-Set)": ""}
+            options.update({p.name: str(p) for p in criteria_files})
 
-        if selected_criteria_path == "":
-            if st.session_state.get("active_criteria_path") != "":
-                st.session_state["active_criteria_path"] = ""
-                st.session_state["active_criteria_set"] = {"name": "none", "version": "", "notes": "", "rules": []}
+            current_path = st.session_state.get("active_criteria_path", str(criteria_files[0]))
+            current_name = Path(current_path).name if current_path else "(kein Kriterien-Set)"
+            if current_name not in options:
+                current_name = list(options.keys())[0]
+
+            selected_criteria_name = st.sidebar.selectbox(
+                "Aktives Kriterien-Set",
+                list(options.keys()),
+                index=list(options.keys()).index(current_name),
+            )
+            selected_criteria_path = options[selected_criteria_name]
+
+            if selected_criteria_path == "":
+                if st.session_state.get("active_criteria_path") != "":
+                    st.session_state["active_criteria_path"] = ""
+                    st.session_state["active_criteria_set"] = {"name": "none", "version": "", "notes": "", "rules": []}
+                    st.rerun()
+            elif selected_criteria_path != st.session_state.get("active_criteria_path"):
+                st.session_state["active_criteria_path"] = selected_criteria_path
+                st.session_state["active_criteria_set"] = load_criteria(selected_criteria_path)
                 st.rerun()
-        elif selected_criteria_path != st.session_state.get("active_criteria_path"):
-            st.session_state["active_criteria_path"] = selected_criteria_path
-            st.session_state["active_criteria_set"] = load_criteria(selected_criteria_path)
-            st.rerun()
 
-
-    st.sidebar.header("Kapazität")
-    st.sidebar.number_input("Minuten/Messstelle normal", min_value=1.0, value=float(st.session_state.get("cap_min_normal", 7)), key="cap_min_normal")
-    st.sidebar.number_input("Minuten/Messstelle mittel", min_value=1.0, value=float(st.session_state.get("cap_min_medium", 12)), key="cap_min_medium")
-    st.sidebar.number_input("Puffer %", min_value=0.0, value=float(st.session_state.get("cap_buffer_pct", 30)), key="cap_buffer_pct")
-    st.sidebar.number_input("Personenanzahl", min_value=1.0, value=float(st.session_state.get("cap_persons", 2)), key="cap_persons")
-    st.sidebar.number_input("Stunden pro Person/Tag", min_value=1.0, value=float(st.session_state.get("cap_hours_day", 7)), key="cap_hours_day")
+    if show_capacity:
+        st.sidebar.header("Kapazität")
+        st.sidebar.number_input("Minuten/Messstelle normal", min_value=1.0, value=float(st.session_state.get("cap_min_normal", 7)), key="cap_min_normal")
+        st.sidebar.number_input("Minuten/Messstelle mittel", min_value=1.0, value=float(st.session_state.get("cap_min_medium", 12)), key="cap_min_medium")
+        st.sidebar.number_input("Puffer %", min_value=0.0, value=float(st.session_state.get("cap_buffer_pct", 30)), key="cap_buffer_pct")
+        st.sidebar.number_input("Personenanzahl", min_value=1.0, value=float(st.session_state.get("cap_persons", 2)), key="cap_persons")
+        st.sidebar.number_input("Stunden pro Person/Tag", min_value=1.0, value=float(st.session_state.get("cap_hours_day", 7)), key="cap_hours_day")
 
     df = load_csv_from_path(selected_path)
-    render_live_criteria_sidebar(df)
+    if show_criteria:
+        render_live_criteria_sidebar(df)
 
     # Apply pending presets before creating filter widgets to avoid session_state conflicts.
     for pfx in ["view_a", "view_b", "view_c"]:
@@ -2671,12 +2698,13 @@ def main() -> None:
     criteria_all_in, criteria_all_ex = apply_criteria_rules(df.copy(), st.session_state.get("active_criteria_set", {}), ref_lists)
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse", "Kriterien", "Vergleich", "Entscheidungsbaum", "Phasenplan", "Prio-Matrix", "Ausschlüsse", "Hilfe & Anleitung"])
+    sidebar_filter_prefix = active_prefix if show_filters else "__none__"
     with tab1:
-        render_view(df, "Filteransicht A", "view_a", active_prefix)
+        render_view(df, "Filteransicht A", "view_a", sidebar_filter_prefix)
     with tab2:
-        render_view(df, "Filteransicht B", "view_b", active_prefix)
+        render_view(df, "Filteransicht B", "view_b", sidebar_filter_prefix)
     with tab3:
-        render_view(df, "Filteransicht C", "view_c", active_prefix)
+        render_view(df, "Filteransicht C", "view_c", sidebar_filter_prefix)
     with tab4:
         render_standort_analyse(df)
     with tab5:
