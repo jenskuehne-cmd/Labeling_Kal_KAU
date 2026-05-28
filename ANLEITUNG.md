@@ -295,3 +295,67 @@ Optionale Spalten:
 ### Wirkung
 - Overrides werden nach den normalen Kriterienregeln angewendet (haben Vorrang).
 - Damit sind gezielte Ausnahmen nachvollziehbar und wiederholbar.
+
+## 18) Automatische Wiederherstellung des letzten Arbeitsstands
+Die App speichert den Arbeitsstand automatisch in:
+
+- `runs/last_session_state.json`
+
+Beim nächsten Start wird dieser Stand automatisch geladen, bevor die Sidebar-Widgets aufgebaut werden.
+
+### Was wird automatisch wiederhergestellt?
+- zuletzt gewählte CSV aus `data/`
+- aktive Filteransicht A/B/C
+- Filterwerte der Ansichten A/B/C
+- Standort-Analyse-Filter
+- aktives Kriterien-Set
+- Go-Live Referenzdatum
+- Kapazitätswerte
+
+### Was wird bewusst nicht automatisch wiederhergestellt?
+- hochgeladene Dateien im Upload-Feld
+- Download-Buttons
+- interne Tabelleneditor-Zustände
+- temporäre DataFrames
+- berechnete Ausschlusslisten
+
+Diese Dinge werden nicht gespeichert, weil Streamlit sonst beim Neustart Fehler erzeugen kann.
+
+### Wo sehe ich das in der App?
+In der Sidebar gibt es den Abschnitt:
+
+- `Arbeitsstand`
+
+Dort siehst du:
+- wann zuletzt ein Arbeitsstand geladen wurde
+- Button `Jetzt speichern`
+- Button `Zurücksetzen`
+
+### Typischer Workflow
+1. App starten.
+2. Die App lädt automatisch die letzte CSV, Filter und Kriterienauswahl.
+3. Kurz prüfen:
+   - richtige CSV?
+   - richtiges Kriterien-Set?
+   - richtige Filteransicht aktiv?
+4. Weiterarbeiten.
+
+### Wenn etwas komisch aussieht
+Nutze in der Sidebar:
+
+- `Arbeitsstand` -> `Zurücksetzen`
+
+Danach die App neu starten oder neu laden. Die aktuellen gespeicherten Filter werden dann nicht mehr automatisch eingelesen.
+
+### Wichtig zur Nachvollziehbarkeit
+Der automatische Arbeitsstand ist nur ein Komfortspeicher. Für fachliche Nachweise weiterhin separat speichern:
+
+- Filteransichten als JSON, wenn du sie später teilen oder belegen willst
+- Kriterien-Sets als JSON-Version, wenn sich die Entscheidungslogik ändert
+- Override-Liste als `reference_lists/manual_overrides.csv`, wenn Einzelfälle dauerhaft übersteuert werden
+
+Kurzregel:
+- `last_session_state.json` = bequem weiterarbeiten
+- Filter-Preset JSON = konkrete Ansicht dokumentieren
+- Kriterien-Set JSON = fachliche Logik versionieren
+- Override-CSV = dauerhafte Einzelfallentscheidung dokumentieren

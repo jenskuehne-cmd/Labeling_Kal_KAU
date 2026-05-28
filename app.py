@@ -24,6 +24,7 @@ CRITERIA_DIR = BASE_DIR / "criteria_sets"
 CRITERIA_DIR.mkdir(parents=True, exist_ok=True)
 RUNS_DIR = BASE_DIR / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
+LAST_SESSION_FILE = RUNS_DIR / "last_session_state.json"
 
 
 def apply_custom_style() -> None:
@@ -194,6 +195,100 @@ def sanitize_filter_stores() -> None:
         store_key = get_store_key(prefix)
         if store_key in st.session_state:
             set_filter_store(prefix, st.session_state[store_key])
+
+
+def _session_restore_value(key: str, value: Any) -> Any:
+    if key == "golive_reference_date" and isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except Exception:
+            return date(2026, 8, 10)
+    return value
+
+
+def restore_last_session() -> None:
+    if st.session_state.get("_last_session_loaded"):
+        return
+    st.session_state["_last_session_loaded"] = True
+    if not LAST_SESSION_FILE.exists():
+        return
+    try:
+        payload = json.loads(LAST_SESSION_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        st.session_state["_last_session_restore_error"] = str(exc)
+        return
+
+    for key, value in payload.get("app_state", {}).items():
+        if key not in st.session_state and not is_forbidden_widget_key(key):
+            st.session_state[key] = _session_restore_value(key, value)
+
+    for prefix, state in payload.get("filter_stores", {}).items():
+        if prefix in {"view_a", "view_b", "view_c"} and isinstance(state, dict):
+            set_filter_store(prefix, state)
+
+    for key, value in payload.get("standort_state", {}).items():
+        if key not in st.session_state and key.startswith("sa_") and not is_forbidden_widget_key(key):
+            st.session_state[key] = value
+
+    if payload.get("selected_csv_name") and "selected_csv_name" not in st.session_state:
+        st.session_state["selected_csv_name"] = payload.get("selected_csv_name")
+    if payload.get("selected_csv_path"):
+        st.session_state["last_selected_csv_path"] = payload.get("selected_csv_path")
+    st.session_state["_last_session_saved_at"] = payload.get("saved_at", "")
+
+
+def collect_persisted_session_state(selected_path: str | None) -> Dict[str, Any]:
+    app_keys = [
+        "active_prefix",
+        "active_criteria_path",
+        "golive_reference_date",
+        "cap_min_normal",
+        "cap_min_medium",
+        "cap_buffer_pct",
+        "cap_persons",
+        "cap_hours_day",
+    ]
+    app_state = {
+        key: json_safe(st.session_state.get(key))
+        for key in app_keys
+        if key in st.session_state and not is_forbidden_widget_key(key)
+    }
+    filter_stores = {
+        prefix: get_filter_store(prefix)
+        for prefix in ["view_a", "view_b", "view_c"]
+        if get_filter_store(prefix)
+    }
+    standort_state = {
+        key: json_safe(value)
+        for key, value in st.session_state.items()
+        if key.startswith("sa_") and not is_forbidden_widget_key(key)
+    }
+    return {
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "selected_csv_path": selected_path or st.session_state.get("last_selected_csv_path", ""),
+        "selected_csv_name": st.session_state.get("selected_csv_name", ""),
+        "app_state": app_state,
+        "filter_stores": json_safe(filter_stores),
+        "standort_state": json_safe(standort_state),
+    }
+
+
+def save_last_session(selected_path: str | None) -> None:
+    try:
+        LAST_SESSION_FILE.write_text(
+            json.dumps(collect_persisted_session_state(selected_path), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        st.session_state["_last_session_save_error"] = str(exc)
+
+
+def reset_last_session() -> None:
+    try:
+        if LAST_SESSION_FILE.exists():
+            LAST_SESSION_FILE.unlink()
+    except Exception as exc:
+        st.session_state["_last_session_reset_error"] = str(exc)
 
 
 def collect_view_state(prefix: str) -> Dict[str, Any]:
@@ -2313,14 +2408,30 @@ def render_help_docs() -> None:
 
 def main() -> None:
     apply_custom_style()
+    restore_last_session()
     sanitize_filter_stores()
     st.title("KAU Relabeling Priorisierung")
 
     # Initialize default criteria set and persisted QC reference list.
     if "criteria_initialized" not in st.session_state:
         default_path = ensure_default_criteria_file()
-        st.session_state["active_criteria_path"] = str(default_path)
-        st.session_state["active_criteria_set"] = load_criteria(str(default_path))
+        restored_criteria_path = (
+            str(st.session_state["active_criteria_path"]).strip()
+            if "active_criteria_path" in st.session_state
+            else None
+        )
+        if restored_criteria_path is None:
+            st.session_state["active_criteria_path"] = str(default_path)
+            st.session_state["active_criteria_set"] = load_criteria(str(default_path))
+        elif restored_criteria_path == "":
+            st.session_state["active_criteria_path"] = ""
+            st.session_state["active_criteria_set"] = {"name": "none", "version": "", "notes": "", "rules": []}
+        elif restored_criteria_path and Path(restored_criteria_path).exists():
+            st.session_state["active_criteria_path"] = restored_criteria_path
+            st.session_state["active_criteria_set"] = load_criteria(restored_criteria_path)
+        else:
+            st.session_state["active_criteria_path"] = str(default_path)
+            st.session_state["active_criteria_set"] = load_criteria(str(default_path))
         qc_csv = REF_DIR / "qc_self_labeled_assets.csv"
         if qc_csv.exists():
             try:
@@ -2349,8 +2460,20 @@ def main() -> None:
         selected_path = None
         if csv_files:
             options = {p.name: str(p) for p in csv_files}
-            selected_name = st.selectbox("Aktuelle CSV", list(options.keys()))
+            option_names = list(options.keys())
+            last_csv_name = Path(str(st.session_state.get("last_selected_csv_path", ""))).name
+            default_csv_name = st.session_state.get("selected_csv_name") or last_csv_name
+            if default_csv_name not in options:
+                default_csv_name = option_names[0]
+            st.session_state["selected_csv_name"] = default_csv_name
+            selected_name = st.selectbox(
+                "Aktuelle CSV",
+                option_names,
+                index=option_names.index(default_csv_name),
+                key="selected_csv_name",
+            )
             selected_path = options[selected_name]
+            st.session_state["last_selected_csv_path"] = selected_path
             st.caption(f"Pfad: {selected_path}")
         else:
             st.info("Noch keine lokale CSV in /data vorhanden.")
@@ -2369,6 +2492,7 @@ def main() -> None:
                 temp_path = DATA_DIR / "_temp_upload.csv"
                 temp_path.write_bytes(uploaded_file.getvalue())
                 selected_path = str(temp_path)
+                st.session_state["last_selected_csv_path"] = selected_path
 
     st.sidebar.header("Referenzlisten")
     with st.sidebar.expander("QC-Grünliste (Excel)", expanded=False):
@@ -2436,6 +2560,27 @@ def main() -> None:
     if "selected_path" not in locals() or not selected_path:
         st.info("Bitte CSV in der Sidebar auswählen oder hochladen.")
         st.stop()
+
+    with st.sidebar.expander("Arbeitsstand", expanded=False):
+        saved_at = st.session_state.get("_last_session_saved_at", "")
+        if saved_at:
+            st.caption(f"Letzter automatisch geladener Stand: {saved_at}")
+        else:
+            st.caption("Noch kein gespeicherter Arbeitsstand vorhanden.")
+        if st.session_state.get("_last_session_restore_error"):
+            st.warning(f"Wiederherstellung nicht möglich: {st.session_state['_last_session_restore_error']}")
+        if st.session_state.get("_last_session_save_error"):
+            st.warning(f"Speichern zuletzt nicht möglich: {st.session_state['_last_session_save_error']}")
+        c_state_1, c_state_2 = st.columns(2)
+        if c_state_1.button("Jetzt speichern", key="last_session_save_now"):
+            save_last_session(selected_path)
+            st.session_state["_last_session_saved_at"] = datetime.now().isoformat(timespec="seconds")
+            st.success("Arbeitsstand gespeichert.")
+        if c_state_2.button("Zurücksetzen", key="last_session_reset"):
+            reset_last_session()
+            st.session_state["_last_session_saved_at"] = ""
+            st.session_state["_skip_last_session_autosave"] = True
+            st.success("Gespeicherter Arbeitsstand gelöscht. Aktuelle Ansicht bleibt bis zum Neustart unverändert.")
 
     st.sidebar.header("Ansicht")
     if "pending_active_prefix" in st.session_state:
@@ -2533,6 +2678,11 @@ def main() -> None:
         render_exclusions(criteria_all_ex)
     with tab11:
         render_help_docs()
+
+    if st.session_state.pop("_skip_last_session_autosave", False):
+        pass
+    else:
+        save_last_session(selected_path)
 
 
 if __name__ == "__main__":

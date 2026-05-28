@@ -9,3 +9,4 @@ __pycache__/
 .venv/
 env/
 venv/
+runs/last_session_state.json
