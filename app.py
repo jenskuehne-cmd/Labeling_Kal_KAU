@@ -109,6 +109,7 @@ def build_column_config(df: pd.DataFrame, allow_manual_edit: bool) -> Dict[str, 
     config: Dict[str, Any] = {}
     for col in df.columns:
         label = short_label(col)
+        col_lower = str(col).lower()
         if col == "prio_manual":
             config[col] = st.column_config.SelectboxColumn(
                 label=label,
@@ -120,7 +121,17 @@ def build_column_config(df: pd.DataFrame, allow_manual_edit: bool) -> Dict[str, 
         elif pd.api.types.is_bool_dtype(df[col]):
             config[col] = st.column_config.CheckboxColumn(label=label, help=col)
         elif pd.api.types.is_numeric_dtype(df[col]):
-            config[col] = st.column_config.NumberColumn(label=label, help=col)
+            if any(token in col_lower for token in ["personentage", "wochenbedarf"]):
+                fmt = "%.1f"
+            elif any(token in col_lower for token in ["aufwand", "minuten", "minutes"]):
+                fmt = "%.0f"
+            elif any(token in col_lower for token in ["puffer", "prozent", "percent", "pct"]):
+                fmt = "%.0f"
+            elif pd.api.types.is_integer_dtype(df[col]):
+                fmt = "%d"
+            else:
+                fmt = "%.2f"
+            config[col] = st.column_config.NumberColumn(label=label, help=col, format=fmt)
         else:
             config[col] = st.column_config.TextColumn(label=label, help=col)
     return config
@@ -2289,6 +2300,10 @@ def render_phase_plan(df_in: pd.DataFrame) -> None:
             grp["aufwand_plus_puffer_min"] = grp["aufwand_12min"] * (1 + buffer_pct / 100.0)
             grp["personentage"] = grp["aufwand_plus_puffer_min"] / (persons * hours_day * 60.0)
             grp["wochenbedarf"] = grp["personentage"] / 5.0
+            for col in ["aufwand_7min", "aufwand_12min", "aufwand_plus_puffer_min"]:
+                grp[col] = grp[col].round(0).astype(int)
+            grp["personentage"] = grp["personentage"].round(1)
+            grp["wochenbedarf"] = grp["wochenbedarf"].round(1)
             st.dataframe(grp, use_container_width=True, height=420, column_config=build_column_config(grp, allow_manual_edit=False))
     with help_col:
         render_context_help("phase_plan")
