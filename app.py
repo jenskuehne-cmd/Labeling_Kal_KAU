@@ -2698,6 +2698,26 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
             csum3.metric("Gesamt-Personentage", f"{grp['personentage'].sum():.1f}")
             st.dataframe(grp, use_container_width=True, height=420, column_config=build_column_config(grp, allow_manual_edit=False))
 
+            raw_export = df_in.copy()
+            raw_export = raw_export[[c for c in raw_export.columns if c in raw_export.columns]]
+            raw_export_preview_cols = [
+                c
+                for c in [
+                    "Asset ID",
+                    "decision_status",
+                    "prio_stage",
+                    "prio_substage",
+                    "relabel_phase",
+                    "recommended_window",
+                    "unterbruch_erforderlich",
+                    "decision_reason",
+                    "time_class",
+                    "access_class",
+                    "ms_legacy_class",
+                    "qc_scope_status",
+                ]
+                if c in raw_export.columns
+            ]
             export_meta = {
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
                 "source_csv_path": source_path or st.session_state.get("last_selected_csv_path", ""),
@@ -2719,12 +2739,19 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                     "total_personentage": float(grp["personentage"].sum()),
                     "total_wochenbedarf": float(grp["wochenbedarf"].sum()),
                 },
+                "raw_classified_preview": json_safe(
+                    raw_export[raw_export_preview_cols].head(50).to_dict(orient="records")
+                    if raw_export_preview_cols
+                    else raw_export.head(50).to_dict(orient="records")
+                ),
                 "phase_plan_preview": json_safe(grp.head(20).to_dict(orient="records")),
             }
             export_csv = grp.to_csv(index=False).encode("utf-8-sig")
+            raw_export_csv = raw_export.to_csv(index=False).encode("utf-8-sig")
             export_zip = build_named_export_zip(
                 {
-                    "phase_plan.csv": export_csv,
+                    "phase_plan_aggregated.csv": export_csv,
+                    "phase_plan_raw_classified.csv": raw_export_csv,
                     "phase_plan_metadata.json": json.dumps(export_meta, ensure_ascii=False, indent=2),
                 }
             )
