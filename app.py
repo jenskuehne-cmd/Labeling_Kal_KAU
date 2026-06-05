@@ -623,6 +623,218 @@ def add_derived_time_columns(df: pd.DataFrame) -> pd.DataFrame:
     return working
 
 
+CSV_SCHEMA_HINTS: Dict[str, List[str]] = {
+    "asset_id": ["Asset ID", "AssetID", "Asset_Id"],
+    "due_date": ["Due Date BMRAM / End Datum SAP", "Due Date", "End Datum SAP"],
+    "start_date": ["Start Datum SAP Auftrag", "Start Datum", "GoLive", "Go Live"],
+    "interval": ["Interval", "Intervall"],
+    "access_text": ["Zugänglichkeit", "Zugaenglichkeit", "Accessibility"],
+    "standort": ["Standort", "Location", "Site"],
+    "status": ["Status"],
+    "category": ["Kategorie", "Category"],
+}
+
+
+def _text_series_contains_any(series: pd.Series, patterns: List[str]) -> pd.Series:
+    if series.empty:
+        return pd.Series([False] * len(series), index=series.index)
+    combined = "|".join(patterns)
+    try:
+        return series.str.contains(combined, case=False, regex=True, na=False)
+    except re.error:
+        return pd.Series([False] * len(series), index=series.index)
+
+
+def classify_access_class(df: pd.DataFrame) -> pd.Series:
+    access_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["access_text"])
+    if not access_col:
+        return pd.Series(["unknown"] * len(df), index=df.index, dtype="string")
+
+    raw = df[access_col].astype("string").fillna("").str.strip()
+    normalized = raw.str.lower()
+
+    easy_patterns = [
+        r"\beinfach\b",
+        r"\beasy\b",
+        r"\bjederzeit\b",
+        r"\btechnikbereich\b",
+        r"\blabor\b",
+        r"\bd[-\s]?zone\b",
+        r"\bleicht\b",
+    ]
+    hard_patterns = [
+        r"\bsehr\s*schwer\b",
+        r"\bschwer\b",
+        r"\breinraum\b",
+        r"\bstillstand\b",
+        r"\bzone\s*[abc]\b",
+        r"\bzone[abc]\b",
+        r"\babc\b",
+    ]
+
+    easy_mask = _text_series_contains_any(normalized, easy_patterns)
+    hard_mask = _text_series_contains_any(normalized, hard_patterns)
+    unknown_mask = raw.eq("") | normalized.isin(["unknown", "unbekannt", "na", "n/a", "none", "null"])
+
+    result = pd.Series(["unknown"] * len(df), index=df.index, dtype="string")
+    result.loc[hard_mask & ~easy_mask] = "ABC"
+    result.loc[easy_mask & ~hard_mask] = "easy"
+    result.loc[hard_mask & easy_mask] = "ABC"
+    result.loc[unknown_mask] = "unknown"
+    return result
+
+
+def classify_legacy_class(df: pd.DataFrame) -> pd.Series:
+    asset_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["asset_id"])
+    if not asset_col:
+        return pd.Series(["MS_legacy_iO"] * len(df), index=df.index, dtype="string")
+    asset_len = df[asset_col].astype("string").str.len()
+    result = pd.Series(["MS_legacy_iO"] * len(df), index=df.index, dtype="string")
+    result.loc[asset_len > 30] = "MS_legacy_krit"
+    return result
+
+
+def classify_qc_scope(df: pd.DataFrame) -> pd.Series:
+    asset_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["asset_id"])
+    qc_assets = {str(v).strip() for v in st.session_state.get("qc_green_assets", []) if str(v).strip()}
+    result = pd.Series(["QC_PE_in_scope"] * len(df), index=df.index, dtype="string")
+    if asset_col and qc_assets:
+        asset_series = df[asset_col].astype("string").str.strip()
+        result.loc[asset_series.isin(qc_assets)] = "QC_PE_excluded"
+
+    text_cols = [c for c in [find_column_by_candidates(df, CSV_SCHEMA_HINTS["status"]), find_column_by_candidates(df, CSV_SCHEMA_HINTS["category"])] if c]
+    if text_cols:
+        combined = df[text_cols].astype("string").fillna("").agg(" ".join, axis=1).str.lower()
+        text_mask = combined.str.contains(r"\b(qc|itot|self|selbst|ausschluss|excluded)\b", regex=True, na=False)
+        result.loc[text_mask] = "QC_PE_excluded"
+    return result
+
+
+def classify_time_class(df: pd.DataFrame, golive_reference: date) -> pd.Series:
+    due_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["due_date"])
+    interval_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["interval"])
+    if not due_col:
+        return pd.Series(["MS_Time_Long"] * len(df), index=df.index, dtype="string")
+
+    due_dt = pd.to_datetime(df[due_col], errors="coerce", dayfirst=True)
+    interval_num = pd.to_numeric(df[interval_col], errors="coerce") if interval_col else pd.Series([pd.NA] * len(df), index=df.index)
+    golive_ts = pd.Timestamp(golive_reference)
+    months_from_golive = (due_dt - golive_ts).dt.days / 30.4375
+
+    result = pd.Series(["MS_Time_Long"] * len(df), index=df.index, dtype="string")
+    valid_due = due_dt.notna()
+
+    immediate_mask = valid_due & (months_from_golive <= 0) & (pd.to_numeric(interval_num, errors="coerce") < 12)
+    immediate_mask = immediate_mask.fillna(False)
+    scope_mask = valid_due & (months_from_golive.between(0, 5, inclusive="both")) & (pd.to_numeric(interval_num, errors="coerce") >= 12)
+    scope_mask = scope_mask.fillna(False)
+    long_mask = valid_due & ~(immediate_mask | scope_mask)
+    long_mask = long_mask.fillna(False)
+
+    result.loc[immediate_mask] = "T0_Immediate"
+    result.loc[scope_mask] = "MS_Time_iScope"
+    result.loc[long_mask] = "MS_Time_Long"
+    return result
+
+
+def derive_decision_tree_columns(df: pd.DataFrame) -> pd.DataFrame:
+    working = add_derived_time_columns(df)
+    working["ms_legacy_class"] = classify_legacy_class(working)
+    working["access_class"] = classify_access_class(working)
+    working["qc_scope_status"] = classify_qc_scope(working)
+    working["time_class"] = classify_time_class(working, st.session_state.get("golive_reference_date", date(2026, 8, 10)))
+    return working
+
+
+def build_csv_schema_report(df: pd.DataFrame) -> Dict[str, Any]:
+    resolved = {}
+    missing = []
+    for key, candidates in CSV_SCHEMA_HINTS.items():
+        match = find_column_by_candidates(df, candidates)
+        if match:
+            resolved[key] = match
+        else:
+            missing.append(key)
+
+    expected = ["asset_id", "due_date", "interval", "access_text"]
+    readiness_missing = [key for key in expected if key not in resolved]
+    time_class_counts = df["time_class"].value_counts(dropna=False).to_dict() if "time_class" in df.columns else {}
+    access_counts = df["access_class"].value_counts(dropna=False).to_dict() if "access_class" in df.columns else {}
+    legacy_counts = df["ms_legacy_class"].value_counts(dropna=False).to_dict() if "ms_legacy_class" in df.columns else {}
+    qc_counts = df["qc_scope_status"].value_counts(dropna=False).to_dict() if "qc_scope_status" in df.columns else {}
+
+    ready = len(readiness_missing) == 0
+    return {
+        "resolved": resolved,
+        "missing": missing,
+        "readiness_missing": readiness_missing,
+        "ready": ready,
+        "time_class_counts": time_class_counts,
+        "access_counts": access_counts,
+        "legacy_counts": legacy_counts,
+        "qc_counts": qc_counts,
+    }
+
+
+def render_csv_check(df: pd.DataFrame) -> None:
+    main_col, help_col = st.columns([4, 1.35])
+    report = build_csv_schema_report(df)
+    with main_col:
+        st.markdown("### CSV-Check")
+        ready_label = "bereit" if report["ready"] else "teilweise unvollständig"
+        st.caption(f"Auto-Pipeline Status: {ready_label}")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Zeilen", f"{len(df):,}".replace(",", "'"))
+        c2.metric("Erkannte Pflichtfelder", f"{len(report['resolved']) - len(report['missing'])}")
+        c3.metric("Fehlende Pflichtfelder", f"{len(report['readiness_missing'])}")
+        c4.metric("QC Excluded", f"{int((df.get('qc_scope_status', pd.Series(dtype='string')) == 'QC_PE_excluded').sum())}" if "qc_scope_status" in df.columns else "0")
+
+        st.markdown("#### Erkannte Spalten")
+        mapping_rows = []
+        for key, label in [
+            ("asset_id", "Asset-ID"),
+            ("due_date", "Due Date"),
+            ("start_date", "Start Datum"),
+            ("interval", "Interval"),
+            ("access_text", "Zugänglichkeit"),
+            ("standort", "Standort"),
+            ("status", "Status"),
+            ("category", "Kategorie"),
+        ]:
+            mapping_rows.append(
+                {
+                    "kanonisch": label,
+                    "erkannt": report["resolved"].get(key, ""),
+                    "status": "OK" if key in report["resolved"] else "fehlt",
+                }
+            )
+        mapping_df = pd.DataFrame(mapping_rows)
+        st.dataframe(mapping_df, use_container_width=True, height=260, column_config=build_column_config(mapping_df, allow_manual_edit=False))
+
+        if report["readiness_missing"]:
+            st.warning("Pflichtfelder fehlen für eine saubere Auto-Planung: " + ", ".join(report["readiness_missing"]))
+        else:
+            st.success("Die CSV ist für die automatische Entscheidungskette grundsätzlich verwendbar.")
+
+        st.markdown("#### Klassifizierungen")
+        class_df = pd.DataFrame(
+            {
+                "time_class": pd.Series(report["time_class_counts"]),
+                "access_class": pd.Series(report["access_counts"]),
+                "ms_legacy_class": pd.Series(report["legacy_counts"]),
+                "qc_scope_status": pd.Series(report["qc_counts"]),
+            }
+        ).fillna(0)
+        st.dataframe(class_df, use_container_width=True, height=260, column_config=build_column_config(class_df, allow_manual_edit=False))
+    with help_col:
+        with st.expander("Worauf geprüft wird", expanded=True):
+            st.caption("- Pflichtspalten werden gegen einen kanonischen Spaltenvertrag geprüft.")
+            st.caption("- Daraus werden die Entscheidungsbaum-Spalten abgeleitet.")
+            st.caption("- Erst danach ist der Phasenplan belastbar.")
+            st.caption("- Wenn Felder fehlen, bleibt die Logik sichtbar, aber der Plan ist nur teilweise automatisiert.")
+
+
 def _compare_series(left: pd.Series, op: str, right: Any) -> pd.Series:
     if isinstance(right, pd.Series):
         right_series = right
@@ -2236,7 +2448,7 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
 
 
 
-def render_decision_tree() -> None:
+def render_decision_tree(df: pd.DataFrame) -> None:
     main_col, help_col = st.columns([4, 1.35])
     with main_col:
         st.markdown("### Entscheidungsbaum")
@@ -2250,6 +2462,21 @@ def render_decision_tree() -> None:
 6. Ergebnis: `prio_stage`, `prio_substage`, `relabel_phase`, `recommended_window`, `unterbruch_erforderlich`
             """
         )
+        if {"time_class", "access_class", "ms_legacy_class", "qc_scope_status"}.issubset(df.columns):
+            st.markdown("#### Aktuelle Klassifikation")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("T0_Immediate", int((df["time_class"] == "T0_Immediate").sum()))
+            c2.metric("MS_Time_iScope", int((df["time_class"] == "MS_Time_iScope").sum()))
+            c3.metric("MS_Time_Long", int((df["time_class"] == "MS_Time_Long").sum()))
+            c4.metric("QC Excluded", int((df["qc_scope_status"] == "QC_PE_excluded").sum()))
+            class_overview = pd.DataFrame(
+                {
+                    "time_class": df["time_class"].value_counts(dropna=False),
+                    "access_class": df["access_class"].value_counts(dropna=False),
+                    "ms_legacy_class": df["ms_legacy_class"].value_counts(dropna=False),
+                }
+            ).fillna(0)
+            st.dataframe(class_overview, use_container_width=True, height=240, column_config=build_column_config(class_overview, allow_manual_edit=False))
     with help_col:
         render_context_help("decision_tree")
 
@@ -2305,6 +2532,10 @@ def render_phase_plan(df_in: pd.DataFrame) -> None:
                 grp[col] = grp[col].round(0).astype(int)
             grp["personentage"] = grp["personentage"].round(1)
             grp["wochenbedarf"] = grp["wochenbedarf"].round(1)
+            csum1, csum2, csum3 = st.columns(3)
+            csum1.metric("Phasen", grp["relabel_phase"].nunique())
+            csum2.metric("Messstellen", int(grp["anzahl_messstellen"].sum()))
+            csum3.metric("Gesamt-Personentage", f"{grp['personentage'].sum():.1f}")
             st.dataframe(grp, use_container_width=True, height=420, column_config=build_column_config(grp, allow_manual_edit=False))
     with help_col:
         render_context_help("phase_plan")
@@ -2407,8 +2638,9 @@ def render_criteria_comparison(df: pd.DataFrame) -> None:
 
 def render_help_docs() -> None:
     st.markdown("### Hilfe & Anleitung")
-    guide = BASE_DIR / "ANLEITUNG.md"
-    click_guide = BASE_DIR / "KLICKANLEITUNG.md"
+    doku_dir = BASE_DIR / "doku"
+    guide = doku_dir / "ANLEITUNG.md"
+    click_guide = doku_dir / "KLICKANLEITUNG.md"
 
     t1, t2 = st.tabs(["ANLEITUNG", "KLICKANLEITUNG"])
     with t1:
@@ -2680,6 +2912,7 @@ def main() -> None:
         st.sidebar.number_input("Stunden pro Person/Tag", min_value=1.0, value=float(st.session_state.get("cap_hours_day", 7)), key="cap_hours_day")
 
     df = load_csv_from_path(selected_path)
+    df = derive_decision_tree_columns(df)
     if show_criteria:
         render_live_criteria_sidebar(df)
 
@@ -2697,7 +2930,7 @@ def main() -> None:
     ref_lists = {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))}
     criteria_all_in, criteria_all_ex = apply_criteria_rules(df.copy(), st.session_state.get("active_criteria_set", {}), ref_lists)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "Standort-Analyse", "Kriterien", "Vergleich", "Entscheidungsbaum", "Phasenplan", "Prio-Matrix", "Ausschlüsse", "Hilfe & Anleitung"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "CSV-Check", "Standort-Analyse", "Kriterien", "Vergleich", "Entscheidungsbaum", "Phasenplan", "Prio-Matrix", "Ausschlüsse", "Hilfe & Anleitung"])
     sidebar_filter_prefix = active_prefix if show_filters else "__none__"
     with tab1:
         render_view(df, "Filteransicht A", "view_a", sidebar_filter_prefix)
@@ -2706,20 +2939,22 @@ def main() -> None:
     with tab3:
         render_view(df, "Filteransicht C", "view_c", sidebar_filter_prefix)
     with tab4:
-        render_standort_analyse(df)
+        render_csv_check(df)
     with tab5:
-        render_criteria_editor(df)
+        render_standort_analyse(df)
     with tab6:
-        render_criteria_comparison(df)
+        render_criteria_editor(df)
     with tab7:
-        render_decision_tree()
+        render_criteria_comparison(df)
     with tab8:
-        render_phase_plan(criteria_all_in)
+        render_decision_tree(df)
     with tab9:
-        render_prio_matrix(criteria_all_in)
+        render_phase_plan(criteria_all_in)
     with tab10:
-        render_exclusions(criteria_all_ex)
+        render_prio_matrix(criteria_all_in)
     with tab11:
+        render_exclusions(criteria_all_ex)
+    with tab12:
         render_help_docs()
 
     if st.session_state.pop("_skip_last_session_autosave", False):
