@@ -345,6 +345,34 @@ def build_named_export_zip(files: Dict[str, bytes | str]) -> bytes:
     return buf.getvalue()
 
 
+def _flatten_for_rows(value: Any, prefix: str = "") -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            rows.extend(_flatten_for_rows(item, child_prefix))
+    elif isinstance(value, list):
+        for idx, item in enumerate(value):
+            child_prefix = f"{prefix}[{idx}]"
+            rows.extend(_flatten_for_rows(item, child_prefix))
+    else:
+        rows.append({"key": prefix, "value": value})
+    return rows
+
+
+def build_phase_plan_excel_export(grp: pd.DataFrame, raw_export: pd.DataFrame, export_meta: Dict[str, Any]) -> bytes:
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        grp.to_excel(writer, sheet_name="phase_plan_aggregated", index=False)
+        raw_export.to_excel(writer, sheet_name="raw_classified", index=False)
+        meta_rows = _flatten_for_rows(export_meta)
+        pd.DataFrame(meta_rows).to_excel(writer, sheet_name="metadata", index=False)
+        criteria = st.session_state.get("active_criteria_set", {})
+        rules = criteria.get("rules", []) if isinstance(criteria, dict) else []
+        pd.DataFrame(rules if isinstance(rules, list) else []).to_excel(writer, sheet_name="decision_tree_rules", index=False)
+    return buf.getvalue()
+
+
 def summarize_decision_tree(criteria: Dict[str, Any]) -> Dict[str, Any]:
     rules = []
     for rule in criteria.get("rules", []) if isinstance(criteria, dict) else []:
@@ -2748,6 +2776,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
             }
             export_csv = grp.to_csv(index=False).encode("utf-8-sig")
             raw_export_csv = raw_export.to_csv(index=False).encode("utf-8-sig")
+            export_xlsx = build_phase_plan_excel_export(grp, raw_export, export_meta)
             export_zip = build_named_export_zip(
                 {
                     "phase_plan_aggregated.csv": export_csv,
@@ -2755,7 +2784,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                     "phase_plan_metadata.json": json.dumps(export_meta, ensure_ascii=False, indent=2),
                 }
             )
-            cexp1, cexp2 = st.columns(2)
+            cexp1, cexp2, cexp3 = st.columns(3)
             cexp1.download_button(
                 "Phasenplan als CSV exportieren",
                 export_csv,
@@ -2764,6 +2793,13 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                 key="phase_plan_export_csv",
             )
             cexp2.download_button(
+                "Phasenplan als Excel exportieren",
+                export_xlsx,
+                file_name=f"phase_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="phase_plan_export_xlsx",
+            )
+            cexp3.download_button(
                 "Phasenplan + Metadaten (ZIP)",
                 export_zip,
                 file_name=f"phase_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
