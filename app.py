@@ -408,16 +408,55 @@ def build_phase_plan_excel_export(grp: pd.DataFrame, raw_export: pd.DataFrame, e
         for row in frame.itertuples(index=False, name=None):
             ws.append([_sanitize_excel_scalar(v) for v in row])
 
+    def write_kv_sheet(sheet_name: str, rows: List[Dict[str, Any]]) -> None:
+        ws = wb.create_sheet(title=sheet_name)
+        ws.append(["Schluessel", "Wert"])
+        for row in rows:
+            ws.append([
+                _sanitize_excel_scalar(row.get("key", "")),
+                _sanitize_excel_scalar(row.get("value", "")),
+            ])
+
+    def write_cover_sheet() -> None:
+        ws = wb.create_sheet(title="Start")
+        ws.append(["Kennzahl", "Wert"])
+        cover_rows = [
+            ("Phasenplan-Export", ""),
+            ("Erstellt am", export_meta.get("generated_at", "")),
+            ("Quelle CSV", export_meta.get("source_csv_name", "")),
+            ("Entscheidungsbaum", export_meta.get("decision_tree_name", "")),
+            ("Entscheidungsbaum-Version", export_meta.get("decision_tree_version", "")),
+            ("Phasen", export_meta.get("summary", {}).get("phases", "")),
+            ("Messstellen", export_meta.get("summary", {}).get("rows", "")),
+            ("Gesamt-Personentage", export_meta.get("summary", {}).get("total_personentage", "")),
+            ("Gesamt-Wochenbedarf", export_meta.get("summary", {}).get("total_wochenbedarf", "")),
+        ]
+        for key, value in cover_rows:
+            ws.append([_sanitize_excel_scalar(key), _sanitize_excel_scalar(value)])
+
+    write_cover_sheet()
     write_sheet("phase_plan_aggregated", grp)
     write_sheet("raw_classified", raw_export)
 
     meta_rows = _flatten_for_rows(export_meta)
-    meta_df = pd.DataFrame(meta_rows)
-    write_sheet("metadata", meta_df)
+    write_kv_sheet("metadata", meta_rows)
 
     criteria = st.session_state.get("active_criteria_set", {})
     rules = criteria.get("rules", []) if isinstance(criteria, dict) else []
     rules_df = pd.DataFrame(rules if isinstance(rules, list) else [])
+    if not rules_df.empty:
+        rename_map = {
+            "id": "Regel-ID",
+            "active": "Aktiv",
+            "action": "Aktion",
+            "reason": "Begruendung",
+            "priority": "Prioritaet",
+            "priority_substage": "Unterstufe",
+            "relabel_phase": "Phase",
+            "unterbruch_erforderlich": "Unterbruch",
+            "recommended_window": "Empfohlenes Fenster",
+        }
+        rules_df = rules_df.rename(columns={k: v for k, v in rename_map.items() if k in rules_df.columns})
     write_sheet("decision_tree_rules", rules_df)
 
     wb.save(buf)
