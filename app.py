@@ -402,6 +402,64 @@ def summarize_decision_tree(criteria: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _phase_sort_key(phase: Any) -> tuple:
+    text = str(phase).strip()
+    low = text.lower()
+    if low == "excluded":
+        return (99, low)
+    if "shutdown_26" in low:
+        return (10, low)
+    if "postgl_bis_oktober" in low:
+        return (20, low)
+    if "klaerung" in low or "zugaenglichkeit" in low:
+        return (30, low)
+    if "shutdown_27" in low:
+        return (40, low)
+    if "postgl_bis_januar" in low:
+        return (50, low)
+    if "opportunistisch" in low:
+        return (60, low)
+    if "backlog" in low:
+        return (70, low)
+    return (80, low)
+
+
+def build_phase_overview_tables(grp: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    overview: Dict[str, pd.DataFrame] = {}
+    if grp is None or grp.empty:
+        return overview
+
+    prio_order = ["P1", "P2", "P2A", "P3", "P4", "P5", "P6"]
+    prio_counts = (
+        grp.groupby("prio_stage", dropna=False)["anzahl_messstellen"]
+        .sum()
+        .reindex(prio_order, fill_value=0)
+        .reset_index()
+        .rename(columns={"prio_stage": "prio_stage", "anzahl_messstellen": "messstellen"})
+    )
+    overview["prio_counts"] = prio_counts
+
+    phase_counts = (
+        grp.groupby("relabel_phase", dropna=False)["anzahl_messstellen"]
+        .sum()
+        .reset_index()
+        .sort_values("relabel_phase", key=lambda s: s.map(_phase_sort_key))
+        .rename(columns={"relabel_phase": "phase", "anzahl_messstellen": "messstellen"})
+    )
+    overview["phase_counts"] = phase_counts
+
+    phase_prio = (
+        grp.pivot_table(index="relabel_phase", columns="prio_stage", values="anzahl_messstellen", aggfunc="sum", fill_value=0)
+        .reindex(index=sorted(grp["relabel_phase"].dropna().unique(), key=_phase_sort_key))
+        .reindex(columns=[p for p in prio_order if p in grp["prio_stage"].dropna().unique()], fill_value=0)
+        .reset_index()
+        .rename(columns={"relabel_phase": "phase"})
+    )
+    overview["phase_prio_matrix"] = phase_prio
+
+    return overview
+
+
 @st.cache_data(show_spinner=False)
 def load_qc_green_assets_from_xlsx(path_str: str, color_hex: str, asset_col_name: str) -> List[str]:
     wb = load_workbook(path_str, data_only=True)
@@ -2725,6 +2783,30 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
             csum2.metric("Messstellen", int(grp["anzahl_messstellen"].sum()))
             csum3.metric("Gesamt-Personentage", f"{grp['personentage'].sum():.1f}")
             st.dataframe(grp, use_container_width=True, height=420, column_config=build_column_config(grp, allow_manual_edit=False))
+
+            st.markdown("#### Grafischer Überblick")
+            overview = build_phase_overview_tables(grp)
+            if overview:
+                view_mode = st.radio(
+                    "Grafikansicht",
+                    ["Nach Prio", "Nach Phase", "Phase x Prio"],
+                    horizontal=True,
+                    key="phase_overview_mode",
+                )
+                if view_mode == "Nach Prio" and not overview["prio_counts"].empty:
+                    chart_df = overview["prio_counts"].set_index("prio_stage")[["messstellen"]]
+                    st.bar_chart(chart_df, height=320)
+                    st.dataframe(overview["prio_counts"], use_container_width=True, height=180, column_config=build_column_config(overview["prio_counts"], allow_manual_edit=False))
+                elif view_mode == "Nach Phase" and not overview["phase_counts"].empty:
+                    chart_df = overview["phase_counts"].set_index("phase")[["messstellen"]]
+                    st.bar_chart(chart_df, height=320)
+                    st.dataframe(overview["phase_counts"], use_container_width=True, height=180, column_config=build_column_config(overview["phase_counts"], allow_manual_edit=False))
+                elif view_mode == "Phase x Prio" and not overview["phase_prio_matrix"].empty:
+                    chart_df = overview["phase_prio_matrix"].set_index("phase")
+                    st.bar_chart(chart_df, height=360)
+                    st.dataframe(overview["phase_prio_matrix"], use_container_width=True, height=220, column_config=build_column_config(overview["phase_prio_matrix"], allow_manual_edit=False))
+            else:
+                st.info("Kein grafischer Überblick verfügbar.")
 
             raw_export = df_in.copy()
             raw_export = raw_export[[c for c in raw_export.columns if c in raw_export.columns]]
