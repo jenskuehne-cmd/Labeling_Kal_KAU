@@ -486,7 +486,7 @@ def _build_overview_svg(
     effort_col: str,
     mode: str,
     title: str,
-    effort_label: str = "Aufwand (Min.)",
+    effort_label: str = "Aufwand (h)",
 ) -> str:
     if rows is None or rows.empty:
         return ""
@@ -496,7 +496,7 @@ def _build_overview_svg(
     data[effort_col] = pd.to_numeric(data[effort_col], errors="coerce").fillna(0)
     labels = [str(v) for v in data[label_col].tolist()]
     counts = [float(v) for v in data[count_col].tolist()]
-    efforts = [float(v) for v in data[effort_col].tolist()]
+    efforts = [float(v) / 60.0 for v in data[effort_col].tolist()]
 
     count_max = max(max(counts), 1.0)
     effort_max = max(max(efforts), 1.0)
@@ -561,7 +561,7 @@ def _build_overview_svg(
         parts.append(f'<rect x="{bar_x:.2f}" y="{bar_y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="6" ry="6" fill="#67a9ff" fill-opacity="0.88"/>')
 
         if mode == "Wert im Balken":
-            label_text = f"{int(round(effort))} min"
+            label_text = f"{effort:.1f} h"
             text_y = bar_y + 18 if bar_height >= 24 else max(bar_y - 6, margin_top + 14)
             parts.append(f'<text x="{center_x:.2f}" y="{text_y:.2f}" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">{html_escape(label_text)}</text>')
         else:
@@ -2935,7 +2935,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                         "aufwand_plus_puffer_min",
                         chart_style,
                         "Messstellen und Aufwand nach Prio",
-                        "Aufwand (Min.)",
+                        "Aufwand (h)",
                     )
                     if chart_html:
                         st.components.v1.html(chart_html, height=430, scrolling=False)
@@ -2954,7 +2954,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                         "aufwand_plus_puffer_min",
                         chart_style,
                         "Messstellen und Aufwand nach Phase",
-                        "Aufwand (Min.)",
+                        "Aufwand (h)",
                     )
                     if chart_html:
                         st.components.v1.html(chart_html, height=430, scrolling=False)
