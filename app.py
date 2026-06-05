@@ -335,6 +335,16 @@ def build_export_zip(csv_bytes: bytes, csv_name: str, filter_state: Dict[str, An
     return buf.getvalue()
 
 
+def build_named_export_zip(files: Dict[str, bytes | str]) -> bytes:
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, content in files.items():
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
 @st.cache_data(show_spinner=False)
 def load_qc_green_assets_from_xlsx(path_str: str, color_hex: str, asset_col_name: str) -> List[str]:
     wb = load_workbook(path_str, data_only=True)
@@ -2630,7 +2640,7 @@ def render_exclusions(df_ex: pd.DataFrame) -> None:
         render_context_help("exclusions")
 
 
-def render_phase_plan(df_in: pd.DataFrame) -> None:
+def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> None:
     main_col, help_col = st.columns([4, 1.35])
     with main_col:
         st.markdown("### Phasenplan")
@@ -2658,6 +2668,51 @@ def render_phase_plan(df_in: pd.DataFrame) -> None:
             csum2.metric("Messstellen", int(grp["anzahl_messstellen"].sum()))
             csum3.metric("Gesamt-Personentage", f"{grp['personentage'].sum():.1f}")
             st.dataframe(grp, use_container_width=True, height=420, column_config=build_column_config(grp, allow_manual_edit=False))
+
+            export_meta = {
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "source_csv_path": source_path or st.session_state.get("last_selected_csv_path", ""),
+                "source_csv_name": Path(source_path).name if source_path else Path(str(st.session_state.get("last_selected_csv_path", ""))).name,
+                "decision_tree_path": st.session_state.get("active_criteria_path", ""),
+                "decision_tree_name": str(st.session_state.get("active_criteria_set", {}).get("name", "")),
+                "decision_tree_version": str(st.session_state.get("active_criteria_set", {}).get("version", "")),
+                "decision_tree_config": get_active_decision_tree_config(),
+                "capacity": {
+                    "min_normal": min_normal,
+                    "min_medium": min_medium,
+                    "buffer_pct": buffer_pct,
+                    "persons": persons,
+                    "hours_day": hours_day,
+                },
+                "summary": {
+                    "phases": int(grp["relabel_phase"].nunique()),
+                    "rows": int(grp["anzahl_messstellen"].sum()),
+                    "total_personentage": float(grp["personentage"].sum()),
+                    "total_wochenbedarf": float(grp["wochenbedarf"].sum()),
+                },
+            }
+            export_csv = grp.to_csv(index=False).encode("utf-8-sig")
+            export_zip = build_named_export_zip(
+                {
+                    "phase_plan.csv": export_csv,
+                    "phase_plan_metadata.json": json.dumps(export_meta, ensure_ascii=False, indent=2),
+                }
+            )
+            cexp1, cexp2 = st.columns(2)
+            cexp1.download_button(
+                "Phasenplan als CSV exportieren",
+                export_csv,
+                file_name=f"phase_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                key="phase_plan_export_csv",
+            )
+            cexp2.download_button(
+                "Phasenplan + Metadaten (ZIP)",
+                export_zip,
+                file_name=f"phase_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip",
+                key="phase_plan_export_zip",
+            )
     with help_col:
         render_context_help("phase_plan")
 
@@ -3073,7 +3128,7 @@ def main() -> None:
     with tab8:
         render_decision_tree(df)
     with tab9:
-        render_phase_plan(criteria_all_in)
+        render_phase_plan(criteria_all_in, source_path=selected_path)
     with tab10:
         render_prio_matrix(criteria_all_in)
     with tab11:
