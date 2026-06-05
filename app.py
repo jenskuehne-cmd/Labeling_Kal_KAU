@@ -12,7 +12,7 @@ import zipfile
 import pandas as pd
 import numpy as np
 import streamlit as st
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 
 st.set_page_config(page_title="KAU Relabeling Priorisierung", layout="wide")
@@ -379,6 +379,8 @@ def _sanitize_excel_scalar(value: Any) -> Any:
             value = str(value)
     if isinstance(value, str):
         cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", value)
+        if cleaned[:1] in {"=", "+", "-", "@"}:
+            cleaned = "'" + cleaned
         if len(cleaned) > 32760:
             cleaned = cleaned[:32760] + "..."
         return cleaned
@@ -397,14 +399,28 @@ def _sanitize_excel_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_phase_plan_excel_export(grp: pd.DataFrame, raw_export: pd.DataFrame, export_meta: Dict[str, Any]) -> bytes:
     buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        _sanitize_excel_frame(grp).to_excel(writer, sheet_name="phase_plan_aggregated", index=False)
-        _sanitize_excel_frame(raw_export).to_excel(writer, sheet_name="raw_classified", index=False)
-        meta_rows = _flatten_for_rows(export_meta)
-        _sanitize_excel_frame(pd.DataFrame(meta_rows)).to_excel(writer, sheet_name="metadata", index=False)
-        criteria = st.session_state.get("active_criteria_set", {})
-        rules = criteria.get("rules", []) if isinstance(criteria, dict) else []
-        _sanitize_excel_frame(pd.DataFrame(rules if isinstance(rules, list) else [])).to_excel(writer, sheet_name="decision_tree_rules", index=False)
+    wb = Workbook(write_only=True)
+
+    def write_sheet(sheet_name: str, frame: pd.DataFrame) -> None:
+        ws = wb.create_sheet(title=sheet_name)
+        frame = _sanitize_excel_frame(frame)
+        ws.append([_sanitize_excel_scalar(col) for col in frame.columns.tolist()])
+        for row in frame.itertuples(index=False, name=None):
+            ws.append([_sanitize_excel_scalar(v) for v in row])
+
+    write_sheet("phase_plan_aggregated", grp)
+    write_sheet("raw_classified", raw_export)
+
+    meta_rows = _flatten_for_rows(export_meta)
+    meta_df = pd.DataFrame(meta_rows)
+    write_sheet("metadata", meta_df)
+
+    criteria = st.session_state.get("active_criteria_set", {})
+    rules = criteria.get("rules", []) if isinstance(criteria, dict) else []
+    rules_df = pd.DataFrame(rules if isinstance(rules, list) else [])
+    write_sheet("decision_tree_rules", rules_df)
+
+    wb.save(buf)
     return buf.getvalue()
 
 
