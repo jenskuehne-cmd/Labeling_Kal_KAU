@@ -345,6 +345,35 @@ def build_named_export_zip(files: Dict[str, bytes | str]) -> bytes:
     return buf.getvalue()
 
 
+def summarize_decision_tree(criteria: Dict[str, Any]) -> Dict[str, Any]:
+    rules = []
+    for rule in criteria.get("rules", []) if isinstance(criteria, dict) else []:
+        if not isinstance(rule, dict):
+            continue
+        rules.append(
+            {
+                "id": rule.get("id", ""),
+                "active": bool(rule.get("active", True)),
+                "action": rule.get("action", ""),
+                "priority": rule.get("priority", ""),
+                "priority_substage": rule.get("priority_substage", rule.get("substage", "")),
+                "relabel_phase": rule.get("relabel_phase", rule.get("phase", "")),
+                "unterbruch_erforderlich": bool(rule.get("unterbruch_erforderlich", rule.get("mark_shutdown", False))),
+                "reason": rule.get("reason", ""),
+                "when": rule.get("when", {}),
+            }
+        )
+    return {
+        "name": str(criteria.get("name", "")) if isinstance(criteria, dict) else "",
+        "version": str(criteria.get("version", "")) if isinstance(criteria, dict) else "",
+        "notes": str(criteria.get("notes", "")) if isinstance(criteria, dict) else "",
+        "config": json_safe(criteria.get("config", {})) if isinstance(criteria, dict) else {},
+        "rule_count": len(rules),
+        "active_rule_count": sum(1 for r in rules if r["active"]),
+        "rules": rules,
+    }
+
+
 @st.cache_data(show_spinner=False)
 def load_qc_green_assets_from_xlsx(path_str: str, color_hex: str, asset_col_name: str) -> List[str]:
     wb = load_workbook(path_str, data_only=True)
@@ -2676,7 +2705,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                 "decision_tree_path": st.session_state.get("active_criteria_path", ""),
                 "decision_tree_name": str(st.session_state.get("active_criteria_set", {}).get("name", "")),
                 "decision_tree_version": str(st.session_state.get("active_criteria_set", {}).get("version", "")),
-                "decision_tree_config": get_active_decision_tree_config(),
+                "decision_tree": summarize_decision_tree(st.session_state.get("active_criteria_set", {})),
                 "capacity": {
                     "min_normal": min_normal,
                     "min_medium": min_medium,
@@ -2690,6 +2719,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                     "total_personentage": float(grp["personentage"].sum()),
                     "total_wochenbedarf": float(grp["wochenbedarf"].sum()),
                 },
+                "phase_plan_preview": json_safe(grp.head(20).to_dict(orient="records")),
             }
             export_csv = grp.to_csv(index=False).encode("utf-8-sig")
             export_zip = build_named_export_zip(
