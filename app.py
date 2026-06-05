@@ -953,6 +953,7 @@ CSV_SCHEMA_HINTS: Dict[str, List[str]] = {
     "start_date": ["Start Datum SAP Auftrag", "Start Datum", "GoLive", "Go Live"],
     "interval": ["Interval", "Intervall"],
     "access_text": ["Zugänglichkeit", "Zugaenglichkeit", "Accessibility"],
+    "description": ["Messstellenbeschreibung", "Messstellen Beschreibung", "Beschreibung", "Description", "Description Text"],
     "standort": ["Standort", "Location", "Site"],
     "status": ["Status"],
     "category": ["Kategorie", "Category"],
@@ -1020,6 +1021,25 @@ def classify_qc_scope(df: pd.DataFrame, config: Dict[str, Any] | None = None) ->
     return result
 
 
+def find_description_column(df: pd.DataFrame) -> str | None:
+    return find_column_by_candidates(df, CSV_SCHEMA_HINTS["description"])
+
+
+def datalogger_mask(df: pd.DataFrame, description_col: str | None = None) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series([], dtype="bool")
+    col = description_col if description_col and description_col in df.columns else find_description_column(df)
+    if not col:
+        return pd.Series([False] * len(df), index=df.index)
+    series = df[col].astype("string").fillna("")
+    return series.str.contains(r"datenlogger|datalogger", case=False, regex=True, na=False)
+
+
+def count_datalogger_rows(df: pd.DataFrame, description_col: str | None = None) -> tuple[int, str | None]:
+    mask = datalogger_mask(df, description_col=description_col)
+    return int(mask.sum()), (description_col if description_col and description_col in df.columns else find_description_column(df))
+
+
 def classify_time_class(df: pd.DataFrame, golive_reference: date, config: Dict[str, Any] | None = None) -> pd.Series:
     config = normalize_decision_tree_config(config)
     due_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["due_date"])
@@ -1074,6 +1094,8 @@ def build_csv_schema_report(df: pd.DataFrame) -> Dict[str, Any]:
     access_counts = df["access_class"].value_counts(dropna=False).to_dict() if "access_class" in df.columns else {}
     legacy_counts = df["ms_legacy_class"].value_counts(dropna=False).to_dict() if "ms_legacy_class" in df.columns else {}
     qc_counts = df["qc_scope_status"].value_counts(dropna=False).to_dict() if "qc_scope_status" in df.columns else {}
+    description_col = resolved.get("description") or find_description_column(df)
+    datalogger_count, _ = count_datalogger_rows(df, description_col=description_col)
 
     ready = len(readiness_missing) == 0
     return {
@@ -1081,6 +1103,8 @@ def build_csv_schema_report(df: pd.DataFrame) -> Dict[str, Any]:
         "missing": missing,
         "readiness_missing": readiness_missing,
         "ready": ready,
+        "description_col": description_col,
+        "datalogger_count": datalogger_count,
         "time_class_counts": time_class_counts,
         "access_counts": access_counts,
         "legacy_counts": legacy_counts,
@@ -1101,6 +1125,9 @@ def render_csv_check(df: pd.DataFrame) -> None:
         c2.metric("Erkannte Pflichtfelder", f"{len(report['resolved']) - len(report['missing'])}")
         c3.metric("Fehlende Pflichtfelder", f"{len(report['readiness_missing'])}")
         c4.metric("QC Excluded", f"{int((df.get('qc_scope_status', pd.Series(dtype='string')) == 'QC_PE_excluded').sum())}" if "qc_scope_status" in df.columns else "0")
+        d1, d2 = st.columns(2)
+        d1.metric("Datenlogger", f"{report['datalogger_count']}")
+        d2.caption(f"Spalte: {report['description_col'] or 'nicht erkannt'}")
 
         st.markdown("#### Erkannte Spalten")
         mapping_rows = []
@@ -1110,6 +1137,7 @@ def render_csv_check(df: pd.DataFrame) -> None:
             ("start_date", "Start Datum"),
             ("interval", "Interval"),
             ("access_text", "Zugänglichkeit"),
+            ("description", "Messstellenbeschreibung"),
             ("standort", "Standort"),
             ("status", "Status"),
             ("category", "Kategorie"),
@@ -1994,6 +2022,32 @@ def apply_filters(df: pd.DataFrame, prefix: str, show_sidebar_filters: bool) -> 
             qc_box.caption(f"QC-Referenzliste aktiv: {len(st.session_state['qc_green_assets'])} Asset IDs")
         else:
             qc_box.caption("Keine QC-Referenzliste geladen.")
+
+    with st.sidebar.expander("Datenlogger-Filter", expanded=False) as dl_box:
+        description_candidates = [c for c in text_cols if any(k in c.lower() for k in ["beschreibung", "description", "desc", "messstellen"])]
+        if not description_candidates:
+            description_candidates = text_cols
+        if description_candidates:
+            default_description = find_description_column(df) if find_description_column(df) in description_candidates else description_candidates[0]
+            description_idx = description_candidates.index(default_description) if default_description in description_candidates else 0
+            description_col = dl_box.selectbox(
+                "Messstellenbeschreibung-Spalte",
+                description_candidates,
+                index=description_idx,
+                key=f"{prefix}_datalogger_desc_col",
+            )
+            dl_mask = datalogger_mask(filtered, description_col=description_col)
+            dl_count = int(dl_mask.sum())
+            dl_box.caption(f"Datenlogger gefunden: {dl_count}")
+            exclude_datalogger = dl_box.checkbox(
+                "Datenlogger ausblenden",
+                value=False,
+                key=f"{prefix}_datalogger_exclude_on",
+            )
+            if exclude_datalogger and dl_count:
+                filtered = filtered[~dl_mask]
+        else:
+            dl_box.caption("Keine Textspalte für die Messstellenbeschreibung verfügbar.")
 
     filtered, excluded_qc = apply_qc_exclusion(filtered, prefix, st.session_state.get)
     st.session_state[f"{prefix}_qc_excluded_df"] = excluded_qc
