@@ -1200,7 +1200,7 @@ def render_live_criteria_sidebar(df: pd.DataFrame) -> None:
         return
 
     ref_lists = {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))}
-    with st.sidebar.expander("Live-Kriterien", expanded=True):
+    with st.sidebar.expander("Live-Entscheidungsbaum", expanded=True):
         st.caption(f"Aktiv: {criteria.get('name', '')} | {criteria.get('version', '')}")
 
         r_interval = _find_rule(criteria, "interval_gt_10")
@@ -1904,9 +1904,9 @@ def build_view_summary(df: pd.DataFrame, prefix: str) -> str:
     criteria = st.session_state.get("active_criteria_set", {})
     cname = str(criteria.get("name", ""))
     if cname and cname != "none":
-        parts.append(f"Kriterien: {cname}")
+        parts.append(f"Entscheidungsbaum: {cname}")
     else:
-        parts.append("Kriterien: keine")
+        parts.append("Entscheidungsbaum: keine")
 
     return " | ".join(parts) if parts else "Keine aktiven Filter"
 
@@ -1950,7 +1950,7 @@ def render_view(df: pd.DataFrame, view_name: str, prefix: str, active_prefix: st
     render_summary(edited, prefix)
 
     if "prio_stage" in edited.columns:
-        st.markdown("#### Prioritätsstufen (aus Kriterien-Set)")
+        st.markdown("#### Prioritätsstufen (aus Entscheidungsbaum)")
         prio_summary = edited.groupby("prio_stage", dropna=False).size().reset_index(name="anzahl")
         prio_summary = prio_summary.sort_values("prio_stage")
         st.dataframe(
@@ -1981,11 +1981,11 @@ def render_view(df: pd.DataFrame, view_name: str, prefix: str, active_prefix: st
 
     excluded_criteria = st.session_state.get(f"{prefix}_criteria_excluded_df")
     if isinstance(excluded_criteria, pd.DataFrame) and not excluded_criteria.empty:
-        st.markdown("#### Ausgeschlossen durch Kriterien-Set")
-        st.write(f"{len(excluded_criteria)} Zeilen wurden durch aktive Kriterien ausgeschlossen.")
+        st.markdown("#### Ausgeschlossen durch Entscheidungsbaum")
+        st.write(f"{len(excluded_criteria)} Zeilen wurden durch den aktiven Entscheidungsbaum ausgeschlossen.")
         default_cols = [c for c in ["Asset ID", "Gebäude / MU", "Standort", "matched_rule_ids", "exclude_reasons"] if c in excluded_criteria.columns]
         sel_cols = st.multiselect(
-            "Spalten in Kriterien-Ausschlussliste",
+            "Spalten in Ausschlussliste",
             options=list(excluded_criteria.columns),
             default=default_cols if default_cols else list(excluded_criteria.columns)[: min(8, len(excluded_criteria.columns))],
             key=f"{prefix}_criteria_excluded_cols",
@@ -2217,7 +2217,7 @@ def build_condition_preview(cond: Dict[str, Any]) -> str:
 
 
 def render_rule_builder(df: pd.DataFrame) -> None:
-    st.markdown("#### Regel-Builder (visuell)")
+    st.markdown("#### Entscheidungsbaum-Builder")
     st.caption("Neu: beliebig viele Bedingungen je Regel (AND/OR), inkl. REGEX und optionalem NOT.")
 
     columns = list(df.columns) + ["months_until_due", "months_since_start", "interval_half_months", "months_from_golive", "asset_id_length"]
@@ -2267,7 +2267,7 @@ def render_rule_builder(df: pd.DataFrame) -> None:
     st.code(json.dumps(when, ensure_ascii=False, indent=2), language="json")
     st.caption(f"Vorschau: {build_condition_preview(when)}")
 
-    if st.button("Regel zum aktiven Kriterien-Set hinzufügen", key="rb_add"):
+    if st.button("Regel zum aktiven Entscheidungsbaum hinzufügen", key="rb_add"):
         criteria = st.session_state.get("active_criteria_set", default_criteria_set())
         new_rule = {
             "id": rule_id.strip() or f"rule_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
@@ -2280,7 +2280,7 @@ def render_rule_builder(df: pd.DataFrame) -> None:
             new_rule["priority"] = priority
         upsert_rule(criteria, new_rule)
         st.session_state["active_criteria_set"] = criteria
-        st.success("Regel hinzugefügt/aktualisiert. Jetzt unten 'Kriterien-Version speichern' klicken.")
+        st.success("Regel hinzugefügt/aktualisiert. Jetzt unten 'Entscheidungsbaum speichern' klicken.")
         st.rerun()
 
 
@@ -2347,7 +2347,7 @@ def render_prio34_shutdown_recipe(df: pd.DataFrame) -> None:
         upsert_rule(criteria, rule_a)
         upsert_rule(criteria, rule_b)
         st.session_state["active_criteria_set"] = criteria
-        st.success("Rezept-Regeln übernommen. Danach Kriterien-Version speichern.")
+        st.success("Rezept-Regeln übernommen. Danach Entscheidungsbaum speichern.")
         st.rerun()
 
     if st.button("Rezept-Regeln entfernen", key="recipe_remove_btn"):
@@ -2357,7 +2357,7 @@ def render_prio34_shutdown_recipe(df: pd.DataFrame) -> None:
         delete_rule_by_id(criteria, "shutdown_override_access")
         delete_rule_by_id(criteria, "shutdown_override_access_length")
         st.session_state["active_criteria_set"] = criteria
-        st.success("Rezept-/Unterbruch-Regeln entfernt. Danach Kriterien-Version speichern.")
+        st.success("Rezept-/Unterbruch-Regeln entfernt. Danach Entscheidungsbaum speichern.")
         st.rerun()
 
 def render_golive_hint() -> None:
@@ -2371,7 +2371,7 @@ TAB_HELP: Dict[str, Dict[str, List[str]]] = {
     "criteria": {
         "Was ist der Zweck?": [
             "Hier wird die offizielle Entscheidungslogik gepflegt.",
-            "Regeln bleiben erst dauerhaft erhalten, wenn eine Kriterien-Version gespeichert wird.",
+            "Regeln bleiben erst dauerhaft erhalten, wenn der Entscheidungsbaum gespeichert wird.",
         ],
         "Wichtige Begriffe": [
             "assign_prio: Zeile bleibt drin und bekommt eine Prio.",
@@ -2419,7 +2419,7 @@ TAB_HELP: Dict[str, Dict[str, List[str]]] = {
     },
     "exclusions": {
         "Was sehe ich hier?": [
-            "Alle Messstellen, die durch Kriterien ausgeschlossen wurden.",
+            "Alle Messstellen, die durch den Entscheidungsbaum ausgeschlossen wurden.",
             "Wichtig sind exclude_reasons und matched_rule_ids.",
         ],
         "Prüffragen": [
@@ -2508,7 +2508,7 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
         criteria = st.session_state.get("active_criteria_set", default_criteria_set())
         st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
         if criteria.get("name") == "none":
-            st.info("Kein Kriterien-Set aktiv. Es werden nur manuelle Filter angewendet.")
+            st.info("Kein Entscheidungsbaum aktiv. Es werden nur manuelle Filter angewendet.")
         st.text_area("Notizen", value=str(criteria.get("notes", "")), key="criteria_notes")
 
         rules = criteria.get("rules", [])
@@ -2522,7 +2522,7 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
 
         c1, c2 = st.columns([2, 1])
         filename = c1.text_input("Dateiname für neue Version", value=f"{criteria.get('name', 'criteria')}_{datetime.now().strftime('%Y%m%d_%H%M')}.json", key="criteria_save_name")
-        if c2.button("Kriterien-Version speichern", key="criteria_save_btn"):
+        if c2.button("Entscheidungsbaum speichern", key="criteria_save_btn"):
             filename_raw = st.session_state.get("criteria_save_name", "").strip()
             stem_name = Path(filename_raw).stem if filename_raw else "criteria_set"
             current_name = str(criteria.get("name", "")).strip()
@@ -2543,7 +2543,7 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
         st.caption("Regeltypen: numeric_gt, string_length_lt, regex_match, date_between, ref_list_match oder when-Block mit AND/OR/NOT")
         st.caption("Action: exclude_from_prio oder assign_prio (priority: P1/P2/P3)")
 
-        with st.expander("Aktives Kriterien-Set (JSON Vorschau)", expanded=False):
+        with st.expander("Aktiver Entscheidungsbaum (JSON Vorschau)", expanded=False):
             st.code(json.dumps(criteria, ensure_ascii=False, indent=2), language="json")
 
         st.markdown("#### Regel entfernen")
@@ -2554,7 +2554,7 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
             if col_del_2.button("Regel löschen", key="criteria_delete_rule_btn"):
                 delete_rule_by_id(criteria, rid)
                 st.session_state["active_criteria_set"] = criteria
-                st.success(f"Regel gelöscht: {rid}. Danach Kriterien-Version speichern.")
+                st.success(f"Regel gelöscht: {rid}. Danach Entscheidungsbaum speichern.")
                 st.rerun()
     with help_col:
         render_context_help("criteria")
@@ -2621,7 +2621,7 @@ def render_exclusions(df_ex: pd.DataFrame) -> None:
     with main_col:
         st.markdown("### Ausschlüsse")
         if df_ex is None or df_ex.empty:
-            st.info("Keine Ausschlüsse im aktuellen Kriterien-Set.")
+            st.info("Keine Ausschlüsse im aktuellen Entscheidungsbaum.")
         else:
             cols = [c for c in ["Asset ID", "Gebäude / MU", "Standort", "exclude_reasons", "matched_rule_ids"] if c in df_ex.columns]
             view = df_ex[cols] if cols else df_ex
@@ -2662,10 +2662,10 @@ def render_phase_plan(df_in: pd.DataFrame) -> None:
         render_context_help("phase_plan")
 
 def render_criteria_comparison(df: pd.DataFrame) -> None:
-    st.markdown("### Kriterien-Vergleich")
+    st.markdown("### Entscheidungsbaum-Vergleich")
     criteria_files = list_criteria_sets()
     if len(criteria_files) < 2:
-        st.info("Für den Vergleich werden mindestens 2 Kriterien-Sets benötigt.")
+        st.info("Für den Vergleich werden mindestens 2 Entscheidungsbäume benötigt.")
         return
 
     options = {p.name: str(p) for p in criteria_files}
@@ -2824,13 +2824,13 @@ def main() -> None:
     st.sidebar.header("Arbeitsmodus")
     sidebar_mode = st.sidebar.radio(
         "Sidebar anzeigen für",
-        ["Filter bearbeiten", "Daten & Referenzen", "Kriterien & Szenarien", "Kapazität", "Hilfe"],
+        ["Filter bearbeiten", "Daten & Referenzen", "Entscheidungsbaum & Szenarien", "Kapazität", "Hilfe"],
         key="sidebar_mode",
     )
 
     show_filters = sidebar_mode == "Filter bearbeiten"
     show_data = sidebar_mode == "Daten & Referenzen"
-    show_criteria = sidebar_mode == "Kriterien & Szenarien"
+    show_criteria = sidebar_mode == "Entscheidungsbaum & Szenarien"
     show_capacity = sidebar_mode == "Kapazität"
     show_help = sidebar_mode == "Hilfe"
 
@@ -2991,7 +2991,7 @@ def main() -> None:
     if "golive_reference_date" not in st.session_state:
         st.session_state["golive_reference_date"] = date(2026, 8, 10)
     if show_criteria:
-        st.sidebar.header("Kriterien")
+        st.sidebar.header("Entscheidungsbaum")
         st.sidebar.date_input(
             "Go-Live Referenzdatum",
             value=st.session_state["golive_reference_date"],
@@ -3000,16 +3000,16 @@ def main() -> None:
         )
         criteria_files = list_criteria_sets()
         if criteria_files:
-            options = {"(kein Kriterien-Set)": ""}
+            options = {"(kein Entscheidungsbaum)": ""}
             options.update({p.name: str(p) for p in criteria_files})
 
             current_path = st.session_state.get("active_criteria_path", str(criteria_files[0]))
-            current_name = Path(current_path).name if current_path else "(kein Kriterien-Set)"
+            current_name = Path(current_path).name if current_path else "(kein Entscheidungsbaum)"
             if current_name not in options:
                 current_name = list(options.keys())[0]
 
             selected_criteria_name = st.sidebar.selectbox(
-                "Aktives Kriterien-Set",
+                "Aktiver Entscheidungsbaum",
                 list(options.keys()),
                 index=list(options.keys()).index(current_name),
             )
@@ -3054,7 +3054,7 @@ def main() -> None:
     ref_lists = {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))}
     criteria_all_in, criteria_all_ex = apply_criteria_rules(df.copy(), st.session_state.get("active_criteria_set", {}), ref_lists)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "CSV-Check", "Standort-Analyse", "Kriterien", "Vergleich", "Entscheidungsbaum", "Phasenplan", "Prio-Matrix", "Ausschlüsse", "Hilfe & Anleitung"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs(["Filteransicht A", "Filteransicht B", "Filteransicht C", "CSV-Check", "Standort-Analyse", "Entscheidungsbaum-Konfig", "Vergleich", "Entscheidungsbaum", "Phasenplan", "Prio-Matrix", "Ausschlüsse", "Hilfe & Anleitung"])
     sidebar_filter_prefix = active_prefix if show_filters else "__none__"
     with tab1:
         render_view(df, "Filteransicht A", "view_a", sidebar_filter_prefix)
