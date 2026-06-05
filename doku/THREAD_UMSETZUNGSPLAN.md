@@ -22,13 +22,13 @@ Die App soll eine lokale Streamlit-Anwendung fuer die Priorisierung von Relabeli
 - Export der gefilterten Daten als CSV und optional als ZIP mit Filterzustand beibehalten.
 
 ### Phase 3: Entscheidungslogik ausbauen
-- Kriterien-Sets als versionierte JSON-Dateien weiterpflegen.
+- Entscheidungsbaum-Versionen als versionierte JSON-Dateien weiterpflegen.
 - Regeltypen klar trennen:
   - Ausschlussregeln
   - Prio-Zuweisung
   - Unterbruch / Shutdown-Markierungen
   - Referenzlisten-Regeln
-- Regel-Builder nur dann erweitern, wenn die Fachlogik dafuer wirklich gebraucht wird.
+- Entscheidungsbaum-Builder nur dann erweitern, wenn die Fachlogik dafuer wirklich gebraucht wird.
 
 ### Phase 4: Fachliche Sonderfaelle integrieren
 - QC-Ausschluesse weiter ueber separate Referenzlisten oder Spalten abbilden.
@@ -36,7 +36,7 @@ Die App soll eine lokale Streamlit-Anwendung fuer die Priorisierung von Relabeli
 - Szenarien / Varianten nicht im gleichen Mechanismus wie Filteransichten vermischen.
 
 ### Phase 5: Auswertung und Nachvollziehbarkeit
-- Vergleich von Kriterien-Versionen weiter ausbauen, wenn fachlich noetig.
+- Vergleich von Entscheidungsbaum-Versionen weiter ausbauen, wenn fachlich noetig.
 - Ausschlusslisten, Trefferlisten und Ergebnislisten transparent halten.
 - In der Anleitung klar dokumentieren, welche Ebene was tut.
 

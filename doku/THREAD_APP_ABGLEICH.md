@@ -25,12 +25,12 @@ Der Thread hatte einen sehr schlanken Startpunkt. Das aktuelle `app.py` geht deu
 - Export als CSV
 - Export als CSV + Filterzustand im ZIP
 - persistenter Arbeitsstand ueber `runs/last_session_state.json`
-- Kriterien-Sets als JSON
+- Entscheidungsbaum-Versionen als JSON
 - QC-Referenzliste
 - manuelle Overrides
 - Standortspezifische Auswertung
 - Phasenplan und Kapazitaetslogik
-- Kriterien-Vergleich
+- Entscheidungsbaum-Vergleich
 - Hilfeseiten und Anleitung
 
 ### In Relation zum Thread
@@ -45,7 +45,7 @@ Die einzige relevante Differenz ist die Produktform:
 
 ## Wo das aktuelle `app.py` bewusst weiter geht
 - Die App trennt Filterung und Entscheidungslogik.
-- Sie hat ein versionierbares Kriterien-Set.
+- Sie hat einen versionierbaren Entscheidungsbaum.
 - Sie speichert Zustand und referenzielle Daten.
 - Sie bietet Vergleich und Fachauswertung.
 

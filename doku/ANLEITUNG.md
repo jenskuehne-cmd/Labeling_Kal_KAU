@@ -6,7 +6,7 @@ Die App hilft, Messstellen systematisch zu priorisieren:
 - Was kann später erfolgen?
 - Was wird bewusst ausgeschlossen (z. B. QC/ITOT)?
 
-Wichtig: Die App trennt **Exploration** (Filteransichten) von **Entscheidungslogik** (Kriterien-Set).
+Wichtig: Die App trennt **Exploration** (Filteransichten) von **Entscheidungslogik** (Entscheidungsbaum).
 
 ## 2) Start
 ```bash
@@ -22,7 +22,7 @@ Es gibt 3 Ebenen:
 - zum Sichten und Analysieren (Regex, Kategorien, numerisch, Datum)
 - schnell, flexibel, aber nicht die „offizielle“ Logik
 
-2. Kriterien-Set (JSON)
+2. Entscheidungsbaum (JSON)
 - versionierbare Entscheidungslogik
 - regelt Ausschluss, Prio-Stufe, Unterbruch, Phase
 
@@ -32,7 +32,7 @@ Es gibt 3 Ebenen:
 
 Merksatz:
 - **Filteransicht** = „Wie schaue ich auf die Daten?“
-- **Kriterien-Set** = „Wie entscheide ich verbindlich?“
+- **Entscheidungsbaum** = „Wie entscheide ich verbindlich?“
 
 ## 4) Datenquelle richtig nutzen
 In der Sidebar unter `Datenquelle`:
@@ -67,7 +67,7 @@ Pro Ansicht:
 - bei Bedarf Preset speichern
 
 ### Empfohlenes Benennungsschema
-Für Kriterien-Sets:
+Für Entscheidungsbaum-Versionen:
 - `v01_baseline.json`
 - `v02_streng_interval.json`
 - `v03_shutdown_focus.json`
@@ -80,7 +80,7 @@ Für Presets:
 ## 6) Was ist nachvollziehbar dokumentiert?
 Nachvollziehbar heißt:
 - Welcher CSV-Datenstand?
-- Welches aktive Kriterien-Set?
+- Welcher aktive Entscheidungsbaum?
 - Welche Regeln haben gegriffen?
 - Welche Zeilen wurden ausgeschlossen und warum?
 
@@ -95,7 +95,7 @@ In der App sichtbar über:
 
 ### Schritt A: Ausgangslage festhalten
 - Datenquelle wählen
-- aktives Kriterien-Set notieren
+- aktiven Entscheidungsbaum notieren
 - Ziel der Runde in `Ansichtszweck` eintragen
 
 ### Schritt B: Baseline prüfen
@@ -106,7 +106,7 @@ In der App sichtbar über:
 - sonst weiß man später nicht, was den Effekt verursacht hat
 
 ### Schritt D: Speichern
-- `Kriterien-Version speichern`
+- `Entscheidungsbaum speichern`
 - sprechender Dateiname
 
 ### Schritt E: Wirkung prüfen
@@ -126,7 +126,7 @@ In der App sichtbar über:
 
 - `exclude_from_prio`
   - Zeile wird aus aktiver Prio-Liste entfernt
-  - erscheint in `Ausgeschlossen durch Kriterien-Set`
+  - erscheint in `Ausgeschlossen durch Entscheidungsbaum`
 
 Deshalb kann die Zeilenzahl gleich bleiben, obwohl Regeln wirken (wenn nur `assign_prio` genutzt wird).
 
@@ -143,7 +143,7 @@ Deshalb kann die Zeilenzahl gleich bleiben, obwohl Regeln wirken (wenn nur `assi
 - Regel B: `asset_id_length <= 34 AND NOT(REGEX schwer|sehr\s*schwer)` -> `exclude_from_prio`
 
 ## 10) Typische Stolperfallen
-- `(kein Kriterien-Set)` aktiv: dann greifen keine Kriterienregeln
+- `(kein Entscheidungsbaum)` aktiv: dann greifen keine Entscheidungsregeln
 - Regel hinzugefügt, aber nicht gespeichert: nach Neustart weg
 - Falsche Spalte in Regel (z. B. `Asset ID <= 34` statt `asset_id_length <= 34`)
 - `assign_prio` erwartet Zeilenreduktion (falsch)
@@ -187,7 +187,7 @@ Tab `Phasenplan` zeigt:
 Vorteil: kein separater Upload nötig, reproduzierbarer Datenstand.
 
 ## 14) Mini-Protokollvorlage pro Version
-Für jede neue Kriterien-Version kurz notieren:
+Für jede neue Entscheidungsbaum-Version kurz notieren:
 - Ziel:
 - Änderung:
 - Erwartung:
@@ -202,8 +202,8 @@ Beispiel:
 - Entscheidung: behalten
 
 ## 15) Schneller Check für Neulinge (vor Freigabe)
-1. Ist das richtige Kriterien-Set aktiv?
-2. Ist `(kein Kriterien-Set)` sicher nicht ausgewählt?
+1. Ist der richtige Entscheidungsbaum aktiv?
+2. Ist `(kein Entscheidungsbaum)` sicher nicht ausgewählt?
 3. Sind Änderungen gespeichert (Datei in `criteria_sets/`)?
 4. Wurden A/B über `Vergleich` gegengeprüft?
 5. Sind Ausschlüsse mit Grund sichtbar?
@@ -217,17 +217,17 @@ Wenn sich eine fachliche Annahme ändert, z. B.:
 - "Zugänglichkeit muss stärker gewichtet werden"
 - "Intervall-Ausnahme soll gelockert werden"
 
-Ziel: nicht das alte Set kaputt machen, sondern eine neue Vergleichsversion erzeugen.
+Ziel: nicht den alten Entscheidungsbaum kaputt machen, sondern eine neue Vergleichsversion erzeugen.
 
 ### Schritt-für-Schritt (Klickpfad)
-1. Sidebar `Kriterien > Aktives Kriterien-Set` auf das aktuelle Referenz-Set stellen.
-2. Tab `Kriterien` öffnen.
+1. Sidebar `Entscheidungsbaum > Aktiver Entscheidungsbaum` auf das aktuelle Referenz-Set stellen.
+2. Tab `Entscheidungsbaum` öffnen.
 3. Die relevante Regel suchen:
    - entweder über `Regel entfernen` (wenn komplett weg)
    - oder in der Tabelle in `when` / `active` anpassen (wenn nur ändern)
 4. Unten bei `Dateiname für neue Version` neuen Namen vergeben:
    - Beispiel: `v08_no_len30_assumption.json`
-5. `Kriterien-Version speichern` klicken.
+5. `Entscheidungsbaum speichern` klicken.
 6. Sidebar prüfen: neues Set aktiv.
 7. Tab `Vergleich` öffnen:
    - `Version A` = vorherige Version
@@ -263,7 +263,7 @@ Warum?
 
 ### Minimaler Qualitätscheck vor Freigabe
 - richtige CSV geladen?
-- richtiges Kriterien-Set aktiv?
+- richtiger Entscheidungsbaum aktiv?
 - Version gespeichert?
 - Vergleich A/B durchgeführt?
 - Ausschlussgründe plausibel?
@@ -293,7 +293,7 @@ Optionale Spalten:
 - `override_shutdown` (`true/false`)
 
 ### Wirkung
-- Overrides werden nach den normalen Kriterienregeln angewendet (haben Vorrang).
+- Overrides werden nach den normalen Entscheidungsbaumregeln angewendet (haben Vorrang).
 - Damit sind gezielte Ausnahmen nachvollziehbar und wiederholbar.
 
 ## 18) Automatische Wiederherstellung des letzten Arbeitsstands
@@ -308,7 +308,7 @@ Beim nächsten Start wird dieser Stand automatisch geladen, bevor die Sidebar-Wi
 - aktive Filteransicht A/B/C
 - Filterwerte der Ansichten A/B/C
 - Standort-Analyse-Filter
-- aktives Kriterien-Set
+- aktiver Entscheidungsbaum
 - Go-Live Referenzdatum
 - Kapazitätswerte
 
@@ -336,7 +336,7 @@ Dort siehst du:
 2. Die App lädt automatisch die letzte CSV, Filter und Kriterienauswahl.
 3. Kurz prüfen:
    - richtige CSV?
-   - richtiges Kriterien-Set?
+   - richtiger Entscheidungsbaum?
    - richtige Filteransicht aktiv?
 4. Weiterarbeiten.
 
@@ -351,13 +351,13 @@ Danach die App neu starten oder neu laden. Die aktuellen gespeicherten Filter we
 Der automatische Arbeitsstand ist nur ein Komfortspeicher. Für fachliche Nachweise weiterhin separat speichern:
 
 - Filteransichten als JSON, wenn du sie später teilen oder belegen willst
-- Kriterien-Sets als JSON-Version, wenn sich die Entscheidungslogik ändert
+- Entscheidungsbaum-Versionen als JSON-Version, wenn sich die Entscheidungslogik ändert
 - Override-Liste als `reference_lists/manual_overrides.csv`, wenn Einzelfälle dauerhaft übersteuert werden
 
 Kurzregel:
 - `last_session_state.json` = bequem weiterarbeiten
 - Filter-Preset JSON = konkrete Ansicht dokumentieren
-- Kriterien-Set JSON = fachliche Logik versionieren
+- Entscheidungsbaum JSON = fachliche Logik versionieren
 - Override-CSV = dauerhafte Einzelfallentscheidung dokumentieren
 
 ## 19) Sidebar-Arbeitsmodus
@@ -371,9 +371,9 @@ Warum?
 ### Modi
 - `Filter bearbeiten`: zeigt nur Auswahl der Filteransicht und die Filterfelder für A/B/C.
 - `Daten & Referenzen`: zeigt CSV-Auswahl, Upload, QC-Grünliste, Overrides und Arbeitsstand.
-- `Kriterien & Szenarien`: zeigt Go-Live, Kriterien-Set und Live-Kriterien.
+- `Entscheidungsbaum & Szenarien`: zeigt Go-Live, Entscheidungsbaum und Live-Entscheidungsbaum.
 - `Kapazität`: zeigt Aufwand- und Teamannahmen.
 - `Hilfe`: zeigt Hinweise zur Anleitung.
 
 ### Wichtig
-Wenn du z. B. im Tab `Phasenplan` bist, brauchst du links meistens keine Filter. Stelle dann den Arbeitsmodus auf `Kapazität` oder `Kriterien & Szenarien`. Die Filter bleiben im Hintergrund erhalten und werden nicht gelöscht.
+Wenn du z. B. im Tab `Phasenplan` bist, brauchst du links meistens keine Filter. Stelle dann den Arbeitsmodus auf `Kapazität` oder `Entscheidungsbaum & Szenarien`. Die Filter bleiben im Hintergrund erhalten und werden nicht gelöscht.

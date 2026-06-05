@@ -26,7 +26,7 @@ Der Thread hat als Startpunkt diesen Funktionsumfang festgehalten:
 ## Fachliche Leitplanken
 - Exploration und Entscheidungslogik sollen getrennt bleiben.
 - Filteransichten sind keine finale Regel-Engine.
-- Kriterien-Sets sollen versionierbar sein.
+- Entscheidungsbaum-Versionen sollen versionierbar sein.
 - Referenzlisten und manuelle Overrides sollen später sauber integrierbar bleiben.
 
 ## Bisherige Projektstruktur, die dafür relevant ist
@@ -56,7 +56,7 @@ Empfohlene Reihenfolge:
 - Prüfen, ob eine separate Minimal-App oder nur ein Ausbau der bestehenden App sinnvoll ist.
 - Die erste Ausbaustufe klar schneiden:
   - reine CSV-Filterung
-  - oder schon Kriterien-Set / Regeln / Priorisierung
+- oder schon Entscheidungsbaum / Regeln / Priorisierung
 
 ## Entscheidungspunkt
 Wenn du möchtest, kann dieser Thread-Handoff jetzt als Arbeitsgrundlage dienen, ohne dass an der App selbst sofort etwas geändert wird.

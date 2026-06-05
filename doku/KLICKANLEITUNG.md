@@ -23,9 +23,9 @@ streamlit run app.py
    - `CSV speichern und verwenden` klicken.
 
 ## 3) Analyse-Modus wählen
-1. Links unter `Kriterien` bei `Aktives Kriterien-Set` auswählen:
-   - `'(kein Kriterien-Set)'` = nur manuelle Filter, keine Kriterienlogik.
-   - JSON-Datei = offizielle Regel-Engine aktiv.
+1. Links unter `Entscheidungsbaum` bei `Aktiver Entscheidungsbaum` auswählen:
+   - `'(kein Entscheidungsbaum)'` = nur manuelle Filter, keine Entscheidungslogik.
+   - JSON-Datei = offizielle Entscheidungsbaum-Engine aktiv.
 2. `Go-Live Referenzdatum` prüfen/setzen.
 
 ## 4) Filteransichten A/B/C sauber trennen
@@ -41,16 +41,16 @@ Pro Ansicht:
 4. Regex/Kategorien/Numerik/Datum setzen.
 5. `Filter-Zusammenfassung (auto)` prüfen.
 
-## 5) Kriterienregeln bauen (offizielle Logik)
-1. Tab `Kriterien` öffnen.
-2. Im `Regel-Builder (visuell)`:
+## 5) Entscheidungsbaumregeln bauen (offizielle Logik)
+1. Tab `Entscheidungsbaum` öffnen.
+2. Im `Entscheidungsbaum-Builder`:
    - `Aktion` wählen (`assign_prio` oder `exclude_from_prio`).
    - `Anzahl Bedingungen` setzen.
    - Pro Bedingung Spalte/Operator/Wert setzen.
    - Bei Textmustern `Operator = REGEX` verwenden.
    - Bei Negation `NOT` aktivieren.
 3. `Regel-ID` und `Begründung` setzen.
-4. `Regel zum aktiven Kriterien-Set hinzufügen` klicken.
+4. `Regel zum aktiven Entscheidungsbaum hinzufügen` klicken.
 
 ## 6) Häufiger Anwendungsfall (kurze IDs)
 Ziel: kurze IDs raus, außer schwer zugänglich (dann P1A + Unterbruch)
@@ -68,16 +68,16 @@ Zusatzregel (kurz + nicht schwer => Ausschluss):
 3. Bedingung 2: `REGEX schwer|sehr\\s*schwer` + `NOT` aktiv
 4. Regel hinzufügen.
 
-## 7) Kriterien-Version speichern
-1. Im Tab `Kriterien` unten `Dateiname für neue Version` setzen, z. B.:
+## 7) Entscheidungsbaum-Version speichern
+1. Im Tab `Entscheidungsbaum` unten `Dateiname für neue Version` setzen, z. B.:
    - `v04_shortid_shutdown_logic.json`
-2. `Kriterien-Version speichern` klicken.
-3. Kontrolle links: `Aktives Kriterien-Set` ist die gerade gespeicherte Datei.
+2. `Entscheidungsbaum speichern` klicken.
+3. Kontrolle links: `Aktiver Entscheidungsbaum` ist die gerade gespeicherte Datei.
 
 ## 8) Wirkung prüfen
 In Filteransicht A/B/C prüfen:
 1. `x von y Zeilen` (wurde wirklich ausgeschlossen?).
-2. Tabelle `Ausgeschlossen durch Kriterien-Set`.
+2. Tabelle `Ausgeschlossen durch Entscheidungsbaum`.
 3. Spalten in Detailtabelle einblenden:
    - `prio_stage`
    - `prio_substage`
@@ -111,17 +111,17 @@ Pro Filteransicht:
 
 Für Freigabe immer mitgeben:
 - CSV-Dateiname
-- Kriterien-Set-Dateiname
+- Entscheidungsbaum-Dateiname
 - Exportdatum
 
 ## 12) Troubleshooting (Kurz)
 - Nichts ändert sich:
-  - Prüfen, ob `'(kein Kriterien-Set)'` aktiv ist.
+  - Prüfen, ob `'(kein Entscheidungsbaum)'` aktiv ist.
 - Regel scheint nicht zu greifen:
   - Operator/Spalte prüfen (bei Länge immer `asset_id_length`, nicht `Asset ID <= 34`).
 - Regel nicht sichtbar:
   - Wurde `Regel ... hinzufügen` geklickt?
-  - Wurde `Kriterien-Version speichern` geklickt?
+  - Wurde `Entscheidungsbaum speichern` geklickt?
 - QC ohne Wirkung:
   - In Ansicht unter `QC-Ausnahme` die Checkbox aktivieren.
 
@@ -129,15 +129,15 @@ Für Freigabe immer mitgeben:
 ## 13) Szenario bauen: Annahme ändern (Nicht-Profi Ablauf)
 Beispielannahme: "`>30 Zeichen` soll nicht mehr prioritätsrelevant sein".
 
-1. Links `Kriterien > Aktives Kriterien-Set` auf das bisherige Set stellen.
-2. Tab `Kriterien` öffnen.
+1. Links `Entscheidungsbaum > Aktiver Entscheidungsbaum` auf das bisherige Set stellen.
+2. Tab `Entscheidungsbaum` öffnen.
 3. In der Regeltabelle alle Regeln identifizieren, die `ms_legacy_class` verwenden.
 4. Für das Szenario entweder:
    - `active` auf `false` setzen (temporär aus), oder
    - Regel löschen (`Regel entfernen`), oder
    - `when` anpassen und die Legacy-Bedingung entfernen.
 5. Unten neuen Dateinamen setzen, z. B. `v08_no_len30_assumption.json`.
-6. `Kriterien-Version speichern` klicken.
+6. `Entscheidungsbaum speichern` klicken.
 7. Tab `Vergleich` öffnen:
    - `Version A` = alte Version
    - `Version B` = neue Szenario-Version
