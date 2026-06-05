@@ -245,6 +245,8 @@ def restore_last_session() -> None:
         st.session_state["selected_csv_name"] = payload.get("selected_csv_name")
     if payload.get("selected_csv_path"):
         st.session_state["last_selected_csv_path"] = payload.get("selected_csv_path")
+    if payload.get("decision_tree_config"):
+        set_active_decision_tree_config(payload.get("decision_tree_config"))
     st.session_state["_last_session_saved_at"] = payload.get("saved_at", "")
 
 
@@ -253,6 +255,7 @@ def collect_persisted_session_state(selected_path: str | None) -> Dict[str, Any]
         "sidebar_mode",
         "active_prefix",
         "active_criteria_path",
+        "decision_tree_config",
         "golive_reference_date",
         "cap_min_normal",
         "cap_min_medium",
@@ -421,6 +424,31 @@ def default_criteria_set() -> Dict[str, Any]:
         "name": "kau_ms_relabeling_v1",
         "version": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
         "notes": "KAU MS Relabeling Standardlogik",
+        "config": {
+            "asset_id_length_gt": 30,
+            "time_scope_months_max": 5,
+            "time_immediate_interval_lt": 12,
+            "access_easy_patterns": [
+                r"\beinfach\b",
+                r"\beasy\b",
+                r"\bjederzeit\b",
+                r"\btechnikbereich\b",
+                r"\blabor\b",
+                r"\bd[-\s]?zone\b",
+                r"\bleicht\b",
+            ],
+            "access_hard_patterns": [
+                r"\bsehr\s*schwer\b",
+                r"\bschwer\b",
+                r"\breinraum\b",
+                r"\bstillstand\b",
+                r"\bzone\s*[abc]\b",
+                r"\bzone[abc]\b",
+                r"\babc\b",
+            ],
+            "qc_keywords": ["qc", "itot", "self", "selbst", "ausschluss", "excluded"],
+            "qc_scope_keywords": ["qc", "itot", "self", "selbst", "ausschluss", "excluded"],
+        },
         "rules": [
             {
                 "id": "exclude_qc_scope",
@@ -552,6 +580,49 @@ def default_criteria_set() -> Dict[str, Any]:
     }
 
 
+def default_decision_tree_config() -> Dict[str, Any]:
+    return json_safe(default_criteria_set()["config"])
+
+
+def normalize_decision_tree_config(config: Dict[str, Any] | None) -> Dict[str, Any]:
+    default_config = default_decision_tree_config()
+    if not isinstance(config, dict):
+        return default_config
+
+    normalized = dict(default_config)
+    for key in [
+        "asset_id_length_gt",
+        "time_scope_months_max",
+        "time_immediate_interval_lt",
+    ]:
+        if key in config:
+            try:
+                normalized[key] = int(float(config.get(key, normalized[key])))
+            except Exception:
+                pass
+
+    for key in ["access_easy_patterns", "access_hard_patterns", "qc_keywords", "qc_scope_keywords"]:
+        value = config.get(key)
+        if isinstance(value, str):
+            items = [item.strip() for item in value.split(",") if item.strip()]
+        elif isinstance(value, list):
+            items = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            items = normalized[key]
+        if items:
+            normalized[key] = items
+
+    return normalized
+
+
+def set_active_decision_tree_config(config: Dict[str, Any] | None) -> None:
+    st.session_state["decision_tree_config"] = normalize_decision_tree_config(config)
+
+
+def get_active_decision_tree_config() -> Dict[str, Any]:
+    return normalize_decision_tree_config(st.session_state.get("decision_tree_config"))
+
+
 def ensure_default_criteria_file() -> Path:
     default_path = CRITERIA_DIR / "kau_ms_relabeling_v1.json"
     if not default_path.exists():
@@ -645,7 +716,8 @@ def _text_series_contains_any(series: pd.Series, patterns: List[str]) -> pd.Seri
         return pd.Series([False] * len(series), index=series.index)
 
 
-def classify_access_class(df: pd.DataFrame) -> pd.Series:
+def classify_access_class(df: pd.DataFrame, config: Dict[str, Any] | None = None) -> pd.Series:
+    config = normalize_decision_tree_config(config)
     access_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["access_text"])
     if not access_col:
         return pd.Series(["unknown"] * len(df), index=df.index, dtype="string")
@@ -653,27 +725,8 @@ def classify_access_class(df: pd.DataFrame) -> pd.Series:
     raw = df[access_col].astype("string").fillna("").str.strip()
     normalized = raw.str.lower()
 
-    easy_patterns = [
-        r"\beinfach\b",
-        r"\beasy\b",
-        r"\bjederzeit\b",
-        r"\btechnikbereich\b",
-        r"\blabor\b",
-        r"\bd[-\s]?zone\b",
-        r"\bleicht\b",
-    ]
-    hard_patterns = [
-        r"\bsehr\s*schwer\b",
-        r"\bschwer\b",
-        r"\breinraum\b",
-        r"\bstillstand\b",
-        r"\bzone\s*[abc]\b",
-        r"\bzone[abc]\b",
-        r"\babc\b",
-    ]
-
-    easy_mask = _text_series_contains_any(normalized, easy_patterns)
-    hard_mask = _text_series_contains_any(normalized, hard_patterns)
+    easy_mask = _text_series_contains_any(normalized, config.get("access_easy_patterns", []))
+    hard_mask = _text_series_contains_any(normalized, config.get("access_hard_patterns", []))
     unknown_mask = raw.eq("") | normalized.isin(["unknown", "unbekannt", "na", "n/a", "none", "null"])
 
     result = pd.Series(["unknown"] * len(df), index=df.index, dtype="string")
@@ -684,17 +737,19 @@ def classify_access_class(df: pd.DataFrame) -> pd.Series:
     return result
 
 
-def classify_legacy_class(df: pd.DataFrame) -> pd.Series:
+def classify_legacy_class(df: pd.DataFrame, config: Dict[str, Any] | None = None) -> pd.Series:
+    config = normalize_decision_tree_config(config)
     asset_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["asset_id"])
     if not asset_col:
         return pd.Series(["MS_legacy_iO"] * len(df), index=df.index, dtype="string")
     asset_len = df[asset_col].astype("string").str.len()
     result = pd.Series(["MS_legacy_iO"] * len(df), index=df.index, dtype="string")
-    result.loc[asset_len > 30] = "MS_legacy_krit"
+    result.loc[asset_len > int(config.get("asset_id_length_gt", 30))] = "MS_legacy_krit"
     return result
 
 
-def classify_qc_scope(df: pd.DataFrame) -> pd.Series:
+def classify_qc_scope(df: pd.DataFrame, config: Dict[str, Any] | None = None) -> pd.Series:
+    config = normalize_decision_tree_config(config)
     asset_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["asset_id"])
     qc_assets = {str(v).strip() for v in st.session_state.get("qc_green_assets", []) if str(v).strip()}
     result = pd.Series(["QC_PE_in_scope"] * len(df), index=df.index, dtype="string")
@@ -705,12 +760,15 @@ def classify_qc_scope(df: pd.DataFrame) -> pd.Series:
     text_cols = [c for c in [find_column_by_candidates(df, CSV_SCHEMA_HINTS["status"]), find_column_by_candidates(df, CSV_SCHEMA_HINTS["category"])] if c]
     if text_cols:
         combined = df[text_cols].astype("string").fillna("").agg(" ".join, axis=1).str.lower()
-        text_mask = combined.str.contains(r"\b(qc|itot|self|selbst|ausschluss|excluded)\b", regex=True, na=False)
+        qc_keywords = config.get("qc_scope_keywords", config.get("qc_keywords", []))
+        pattern = "|".join([str(v).strip() for v in qc_keywords if str(v).strip()])
+        text_mask = combined.str.contains(pattern if pattern else r"\b(qc|itot|self|selbst|ausschluss|excluded)\b", regex=True, na=False)
         result.loc[text_mask] = "QC_PE_excluded"
     return result
 
 
-def classify_time_class(df: pd.DataFrame, golive_reference: date) -> pd.Series:
+def classify_time_class(df: pd.DataFrame, golive_reference: date, config: Dict[str, Any] | None = None) -> pd.Series:
+    config = normalize_decision_tree_config(config)
     due_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["due_date"])
     interval_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["interval"])
     if not due_col:
@@ -724,9 +782,9 @@ def classify_time_class(df: pd.DataFrame, golive_reference: date) -> pd.Series:
     result = pd.Series(["MS_Time_Long"] * len(df), index=df.index, dtype="string")
     valid_due = due_dt.notna()
 
-    immediate_mask = valid_due & (months_from_golive <= 0) & (pd.to_numeric(interval_num, errors="coerce") < 12)
+    immediate_mask = valid_due & (months_from_golive <= 0) & (pd.to_numeric(interval_num, errors="coerce") < float(config.get("time_immediate_interval_lt", 12)))
     immediate_mask = immediate_mask.fillna(False)
-    scope_mask = valid_due & (months_from_golive.between(0, 5, inclusive="both")) & (pd.to_numeric(interval_num, errors="coerce") >= 12)
+    scope_mask = valid_due & (months_from_golive.between(0, float(config.get("time_scope_months_max", 5)), inclusive="both")) & (pd.to_numeric(interval_num, errors="coerce") >= float(config.get("time_immediate_interval_lt", 12)))
     scope_mask = scope_mask.fillna(False)
     long_mask = valid_due & ~(immediate_mask | scope_mask)
     long_mask = long_mask.fillna(False)
@@ -738,11 +796,12 @@ def classify_time_class(df: pd.DataFrame, golive_reference: date) -> pd.Series:
 
 
 def derive_decision_tree_columns(df: pd.DataFrame) -> pd.DataFrame:
+    config = get_active_decision_tree_config()
     working = add_derived_time_columns(df)
-    working["ms_legacy_class"] = classify_legacy_class(working)
-    working["access_class"] = classify_access_class(working)
-    working["qc_scope_status"] = classify_qc_scope(working)
-    working["time_class"] = classify_time_class(working, st.session_state.get("golive_reference_date", date(2026, 8, 10)))
+    working["ms_legacy_class"] = classify_legacy_class(working, config)
+    working["access_class"] = classify_access_class(working, config)
+    working["qc_scope_status"] = classify_qc_scope(working, config)
+    working["time_class"] = classify_time_class(working, st.session_state.get("golive_reference_date", date(2026, 8, 10)), config)
     return working
 
 
@@ -2386,9 +2445,65 @@ def render_context_help(help_key: str) -> None:
 def render_criteria_editor(df: pd.DataFrame) -> None:
     main_col, help_col = st.columns([4, 1.35])
     with main_col:
-        st.markdown("### Kriterien-Set")
+        st.markdown("### Entscheidungsbaum")
         render_golive_hint()
         render_prio34_shutdown_recipe(df)
+        st.markdown("#### Entscheidungsbaum-Konfiguration")
+        cfg = get_active_decision_tree_config()
+        c1, c2, c3 = st.columns(3)
+        cfg_asset = c1.number_input(
+            "Legacy-Schwelle Asset-ID >",
+            min_value=1,
+            max_value=120,
+            value=int(cfg.get("asset_id_length_gt", 30)),
+            step=1,
+            key="dt_asset_id_length_gt",
+        )
+        cfg_scope = c2.number_input(
+            "iScope Fenster (Monate)",
+            min_value=0,
+            max_value=24,
+            value=int(cfg.get("time_scope_months_max", 5)),
+            step=1,
+            key="dt_time_scope_months_max",
+        )
+        cfg_interval = c3.number_input(
+            "Immediate wenn Intervall <",
+            min_value=1,
+            max_value=36,
+            value=int(cfg.get("time_immediate_interval_lt", 12)),
+            step=1,
+            key="dt_time_immediate_interval_lt",
+        )
+        c4, c5 = st.columns(2)
+        easy_patterns = c4.text_area(
+            "Zugänglichkeit easy Muster (kommagetrennt)",
+            value=", ".join(cfg.get("access_easy_patterns", [])),
+            key="dt_access_easy_patterns",
+            height=90,
+        )
+        hard_patterns = c5.text_area(
+            "Zugänglichkeit hard Muster (kommagetrennt)",
+            value=", ".join(cfg.get("access_hard_patterns", [])),
+            key="dt_access_hard_patterns",
+            height=90,
+        )
+        qc_patterns = st.text_area(
+            "QC/ITOT Muster (kommagetrennt)",
+            value=", ".join(cfg.get("qc_keywords", [])),
+            key="dt_qc_keywords",
+            height=80,
+        )
+        current_cfg = {
+            "asset_id_length_gt": int(cfg_asset),
+            "time_scope_months_max": int(cfg_scope),
+            "time_immediate_interval_lt": int(cfg_interval),
+            "access_easy_patterns": [p.strip() for p in easy_patterns.split(",") if p.strip()],
+            "access_hard_patterns": [p.strip() for p in hard_patterns.split(",") if p.strip()],
+            "qc_keywords": [p.strip() for p in qc_patterns.split(",") if p.strip()],
+            "qc_scope_keywords": [p.strip() for p in qc_patterns.split(",") if p.strip()],
+        }
+        set_active_decision_tree_config(current_cfg)
         render_rule_builder(df)
         criteria = st.session_state.get("active_criteria_set", default_criteria_set())
         st.write(f"Aktiv: {criteria.get('name', '')} | Version: {criteria.get('version', '')}")
@@ -2417,6 +2532,7 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
                 "name": effective_name,
                 "version": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
                 "notes": st.session_state.get("criteria_notes", ""),
+                "config": get_active_decision_tree_config(),
                 "rules": edited_rules.fillna("").to_dict(orient="records"),
             }
             target = save_criteria(new_set, filename)
@@ -2452,6 +2568,11 @@ def render_decision_tree(df: pd.DataFrame) -> None:
     main_col, help_col = st.columns([4, 1.35])
     with main_col:
         st.markdown("### Entscheidungsbaum")
+        cfg = get_active_decision_tree_config()
+        c_cfg1, c_cfg2, c_cfg3 = st.columns(3)
+        c_cfg1.metric("Legacy-Schwelle", int(cfg.get("asset_id_length_gt", 30)))
+        c_cfg2.metric("iScope Monate", int(cfg.get("time_scope_months_max", 5)))
+        c_cfg3.metric("Immediate Intervall <", int(cfg.get("time_immediate_interval_lt", 12)))
         st.markdown(
             """
 1. Scope bestimmen: `qc_scope_status`
@@ -2680,6 +2801,7 @@ def main() -> None:
         else:
             st.session_state["active_criteria_path"] = str(default_path)
             st.session_state["active_criteria_set"] = load_criteria(str(default_path))
+        set_active_decision_tree_config(st.session_state.get("active_criteria_set", {}).get("config"))
         qc_csv = REF_DIR / "qc_self_labeled_assets.csv"
         if qc_csv.exists():
             try:
@@ -2897,10 +3019,12 @@ def main() -> None:
                 if st.session_state.get("active_criteria_path") != "":
                     st.session_state["active_criteria_path"] = ""
                     st.session_state["active_criteria_set"] = {"name": "none", "version": "", "notes": "", "rules": []}
+                    set_active_decision_tree_config(None)
                     st.rerun()
             elif selected_criteria_path != st.session_state.get("active_criteria_path"):
                 st.session_state["active_criteria_path"] = selected_criteria_path
                 st.session_state["active_criteria_set"] = load_criteria(selected_criteria_path)
+                set_active_decision_tree_config(st.session_state["active_criteria_set"].get("config"))
                 st.rerun()
 
     if show_capacity:
