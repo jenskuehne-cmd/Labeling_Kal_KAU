@@ -363,8 +363,25 @@ def _flatten_for_rows(value: Any, prefix: str = "") -> List[Dict[str, Any]]:
 
 
 def _sanitize_excel_scalar(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (date, datetime, pd.Timestamp)):
+        return value.isoformat()
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    if isinstance(value, (dict, list, tuple, set)):
+        try:
+            value = json.dumps(json_safe(value), ensure_ascii=False)
+        except Exception:
+            value = str(value)
     if isinstance(value, str):
-        return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", value)
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", value)
+        if len(cleaned) > 32760:
+            cleaned = cleaned[:32760] + "..."
+        return cleaned
     return value
 
 
