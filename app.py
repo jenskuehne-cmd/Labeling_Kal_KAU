@@ -1040,6 +1040,17 @@ def count_datalogger_rows(df: pd.DataFrame, description_col: str | None = None) 
     return int(mask.sum()), (description_col if description_col and description_col in df.columns else find_description_column(df))
 
 
+def apply_datalogger_prefilter(df: pd.DataFrame, enabled: bool, description_col: str | None = None) -> tuple[pd.DataFrame, int, str | None]:
+    if df is None or df.empty:
+        return df, 0, description_col
+    if not enabled:
+        return df, 0, description_col if description_col and description_col in df.columns else find_description_column(df)
+
+    col = description_col if description_col and description_col in df.columns else find_description_column(df)
+    mask = datalogger_mask(df, description_col=col)
+    return df.loc[~mask].copy(), int(mask.sum()), col
+
+
 def classify_time_class(df: pd.DataFrame, golive_reference: date, config: Dict[str, Any] | None = None) -> pd.Series:
     config = normalize_decision_tree_config(config)
     due_col = find_column_by_candidates(df, CSV_SCHEMA_HINTS["due_date"])
@@ -1128,6 +1139,9 @@ def render_csv_check(df: pd.DataFrame) -> None:
         d1, d2 = st.columns(2)
         d1.metric("Datenlogger", f"{report['datalogger_count']}")
         d2.caption(f"Spalte: {report['description_col'] or 'nicht erkannt'}")
+        prefilter_on = bool(st.session_state.get("datalogger_prefilter_on", False))
+        prefilter_removed = int(st.session_state.get("datalogger_prefilter_removed_count", 0))
+        st.caption(f"Datenlogger-Vorfilter: {'aktiv' if prefilter_on else 'inaktiv'} | entfernt: {prefilter_removed}")
 
         st.markdown("#### Erkannte Spalten")
         mapping_rows = []
@@ -2023,7 +2037,7 @@ def apply_filters(df: pd.DataFrame, prefix: str, show_sidebar_filters: bool) -> 
         else:
             qc_box.caption("Keine QC-Referenzliste geladen.")
 
-    with st.sidebar.expander("Datenlogger-Filter", expanded=False) as dl_box:
+    with st.sidebar.expander("Datenlogger-Info", expanded=False) as dl_box:
         description_candidates = [c for c in text_cols if any(k in c.lower() for k in ["beschreibung", "description", "desc", "messstellen"])]
         if not description_candidates:
             description_candidates = text_cols
@@ -2038,14 +2052,8 @@ def apply_filters(df: pd.DataFrame, prefix: str, show_sidebar_filters: bool) -> 
             )
             dl_mask = datalogger_mask(filtered, description_col=description_col)
             dl_count = int(dl_mask.sum())
-            dl_box.caption(f"Datenlogger gefunden: {dl_count}")
-            exclude_datalogger = dl_box.checkbox(
-                "Datenlogger ausblenden",
-                value=False,
-                key=f"{prefix}_datalogger_exclude_on",
-            )
-            if exclude_datalogger and dl_count:
-                filtered = filtered[~dl_mask]
+            dl_box.caption(f"Datenlogger gefunden in aktueller Ansicht: {dl_count}")
+            dl_box.caption("Der eigentliche Ausschluss läuft als globaler Vorfilter in der Sidebar.")
         else:
             dl_box.caption("Keine Textspalte für die Messstellenbeschreibung verfügbar.")
 
@@ -3477,7 +3485,44 @@ def main() -> None:
         st.sidebar.number_input("Personenanzahl", min_value=1.0, value=float(st.session_state.get("cap_persons", 2)), key="cap_persons")
         st.sidebar.number_input("Stunden pro Person/Tag", min_value=1.0, value=float(st.session_state.get("cap_hours_day", 7)), key="cap_hours_day")
 
-    df = load_csv_from_path(selected_path)
+    df_raw = load_csv_from_path(selected_path)
+
+    if "datalogger_prefilter_on" not in st.session_state:
+        st.session_state["datalogger_prefilter_on"] = False
+    raw_text_cols = get_text_columns(df_raw)
+    datalogger_candidates = [c for c in raw_text_cols if any(k in c.lower() for k in ["beschreibung", "description", "desc", "messstellen"])]
+    if not datalogger_candidates:
+        datalogger_candidates = raw_text_cols
+    with st.sidebar.expander("Datenlogger-Vorfilter", expanded=False):
+        if datalogger_candidates:
+            default_description = find_description_column(df_raw)
+            if default_description not in datalogger_candidates:
+                default_description = datalogger_candidates[0]
+            description_idx = datalogger_candidates.index(default_description) if default_description in datalogger_candidates else 0
+            datalogger_description_col = st.selectbox(
+                "Messstellenbeschreibung-Spalte",
+                datalogger_candidates,
+                index=description_idx,
+                key="datalogger_prefilter_desc_col",
+            )
+            st.checkbox(
+                "Datenlogger vorab aus dem Phasenplan entfernen",
+                value=bool(st.session_state.get("datalogger_prefilter_on", False)),
+                key="datalogger_prefilter_on",
+            )
+            datalogger_count_raw, _ = count_datalogger_rows(df_raw, description_col=datalogger_description_col)
+            st.caption(f"Datenlogger in Originaldatei: {datalogger_count_raw}")
+            st.caption("Wirkung: entfernt die Zeilen vor Entscheidungsbaum und Phasenplan.")
+        else:
+            st.caption("Keine geeignete Textspalte für die Messstellenbeschreibung gefunden.")
+
+    df, datalogger_removed_count, datalogger_description_col = apply_datalogger_prefilter(
+        df_raw,
+        bool(st.session_state.get("datalogger_prefilter_on", False)),
+        st.session_state.get("datalogger_prefilter_desc_col"),
+    )
+    st.session_state["datalogger_prefilter_removed_count"] = datalogger_removed_count
+    st.session_state["datalogger_prefilter_description_col"] = datalogger_description_col or ""
     df = derive_decision_tree_columns(df)
     if show_criteria:
         render_live_criteria_sidebar(df)
