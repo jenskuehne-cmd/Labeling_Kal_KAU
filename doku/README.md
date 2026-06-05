@@ -74,4 +74,3 @@ streamlit run app.py
 - Wenn kein Kriterien-Set aktiv ist, greift nur die manuelle Filterung.
 - Geaenderte Kriterien sollten immer als neue JSON-Version gespeichert werden.
 - Der automatische Arbeitsstand wird in `runs/last_session_state.json` abgelegt und ist nicht fuer das manuelle Editieren gedacht.
-
