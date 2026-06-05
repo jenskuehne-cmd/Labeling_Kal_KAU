@@ -362,16 +362,32 @@ def _flatten_for_rows(value: Any, prefix: str = "") -> List[Dict[str, Any]]:
     return rows
 
 
+def _sanitize_excel_scalar(value: Any) -> Any:
+    if isinstance(value, str):
+        return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", value)
+    return value
+
+
+def _sanitize_excel_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    cleaned = df.copy()
+    for col in cleaned.columns:
+        if cleaned[col].dtype == "object" or pd.api.types.is_string_dtype(cleaned[col]):
+            cleaned[col] = cleaned[col].map(_sanitize_excel_scalar)
+    return cleaned
+
+
 def build_phase_plan_excel_export(grp: pd.DataFrame, raw_export: pd.DataFrame, export_meta: Dict[str, Any]) -> bytes:
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        grp.to_excel(writer, sheet_name="phase_plan_aggregated", index=False)
-        raw_export.to_excel(writer, sheet_name="raw_classified", index=False)
+        _sanitize_excel_frame(grp).to_excel(writer, sheet_name="phase_plan_aggregated", index=False)
+        _sanitize_excel_frame(raw_export).to_excel(writer, sheet_name="raw_classified", index=False)
         meta_rows = _flatten_for_rows(export_meta)
-        pd.DataFrame(meta_rows).to_excel(writer, sheet_name="metadata", index=False)
+        _sanitize_excel_frame(pd.DataFrame(meta_rows)).to_excel(writer, sheet_name="metadata", index=False)
         criteria = st.session_state.get("active_criteria_set", {})
         rules = criteria.get("rules", []) if isinstance(criteria, dict) else []
-        pd.DataFrame(rules if isinstance(rules, list) else []).to_excel(writer, sheet_name="decision_tree_rules", index=False)
+        _sanitize_excel_frame(pd.DataFrame(rules if isinstance(rules, list) else [])).to_excel(writer, sheet_name="decision_tree_rules", index=False)
     return buf.getvalue()
 
 
