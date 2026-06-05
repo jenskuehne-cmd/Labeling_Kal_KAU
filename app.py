@@ -1,6 +1,8 @@
 import json
 import ast
+import math
 import re
+from html import escape as html_escape
 from io import BytesIO
 from datetime import date, datetime
 from pathlib import Path
@@ -431,7 +433,7 @@ def build_phase_overview_tables(grp: pd.DataFrame) -> Dict[str, pd.DataFrame]:
 
     prio_order = ["P1", "P2", "P2A", "P3", "P4", "P5", "P6"]
     prio_counts = (
-        grp.groupby("prio_stage", dropna=False)["anzahl_messstellen"]
+        grp.groupby("prio_stage", dropna=False)[["anzahl_messstellen", "aufwand_plus_puffer_min", "personentage"]]
         .sum()
         .reindex(prio_order, fill_value=0)
         .reset_index()
@@ -440,7 +442,7 @@ def build_phase_overview_tables(grp: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     overview["prio_counts"] = prio_counts
 
     phase_counts = (
-        grp.groupby("relabel_phase", dropna=False)["anzahl_messstellen"]
+        grp.groupby("relabel_phase", dropna=False)[["anzahl_messstellen", "aufwand_plus_puffer_min", "personentage"]]
         .sum()
         .reset_index()
         .sort_values("relabel_phase", key=lambda s: s.map(_phase_sort_key))
@@ -458,6 +460,132 @@ def build_phase_overview_tables(grp: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     overview["phase_prio_matrix"] = phase_prio
 
     return overview
+
+
+def _nice_tick_step(max_value: float, target_ticks: int = 4) -> int:
+    if not max_value or max_value <= 0:
+        return 1
+    raw_step = max_value / max(target_ticks, 1)
+    magnitude = 10 ** max(int(math.floor(math.log10(raw_step))), 0)
+    residual = raw_step / magnitude
+    if residual <= 1:
+        step = 1 * magnitude
+    elif residual <= 2:
+        step = 2 * magnitude
+    elif residual <= 5:
+        step = 5 * magnitude
+    else:
+        step = 10 * magnitude
+    return max(int(step), 1)
+
+
+def _build_overview_svg(
+    rows: pd.DataFrame,
+    label_col: str,
+    count_col: str,
+    effort_col: str,
+    mode: str,
+    title: str,
+    effort_label: str = "Aufwand (Min.)",
+) -> str:
+    if rows is None or rows.empty:
+        return ""
+
+    data = rows[[label_col, count_col, effort_col]].copy()
+    data[count_col] = pd.to_numeric(data[count_col], errors="coerce").fillna(0)
+    data[effort_col] = pd.to_numeric(data[effort_col], errors="coerce").fillna(0)
+    labels = [str(v) for v in data[label_col].tolist()]
+    counts = [float(v) for v in data[count_col].tolist()]
+    efforts = [float(v) for v in data[effort_col].tolist()]
+
+    count_max = max(max(counts), 1.0)
+    effort_max = max(max(efforts), 1.0)
+    label_count = len(labels)
+    slot_width = 92
+    width = max(760, 120 + label_count * slot_width)
+    height = 360
+    margin_left = 68
+    margin_right = 72
+    margin_top = 44
+    margin_bottom = 74
+    plot_width = width - margin_left - margin_right
+    plot_height = height - margin_top - margin_bottom
+    base_y = margin_top + plot_height
+
+    left_step = _nice_tick_step(count_max)
+    left_ticks = list(range(0, int(math.ceil(count_max / left_step) * left_step) + left_step, left_step))
+    right_step = _nice_tick_step(effort_max)
+    right_ticks = list(range(0, int(math.ceil(effort_max / right_step) * right_step) + right_step, right_step))
+    if len(left_ticks) > 6:
+        left_ticks = left_ticks[::2]
+    if len(right_ticks) > 6:
+        right_ticks = right_ticks[::2]
+
+    def y_left(value: float) -> float:
+        return margin_top + plot_height - (value / count_max) * plot_height
+
+    def y_right(value: float) -> float:
+        return margin_top + plot_height - (value / effort_max) * plot_height
+
+    bar_width = min(44, max(20, plot_width / max(label_count, 1) * 0.42))
+    parts = [
+        f'<div style="margin: 0.25rem 0 0.75rem 0;"><strong>{html_escape(title)}</strong></div>',
+        f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" role="img" aria-label="{html_escape(title)}">',
+        '<rect x="0" y="0" width="100%" height="100%" rx="14" ry="14" fill="white" fill-opacity="0.04" stroke="rgba(255,255,255,0.12)"/>',
+    ]
+
+    # Grid and axes.
+    for tick in left_ticks:
+        y = y_left(tick)
+        parts.append(f'<line x1="{margin_left}" y1="{y:.2f}" x2="{width - margin_right}" y2="{y:.2f}" stroke="rgba(255,255,255,0.14)" stroke-dasharray="4 4"/>')
+        parts.append(f'<text x="{margin_left - 10}" y="{y + 4:.2f}" text-anchor="end" font-size="11" fill="#dbe5ff">{int(tick)}</text>')
+    for tick in right_ticks:
+        y = y_right(tick)
+        parts.append(f'<text x="{width - margin_right + 10}" y="{y + 4:.2f}" text-anchor="start" font-size="11" fill="#dbe5ff">{int(tick)}</text>')
+
+    parts.append(f'<line x1="{margin_left}" y1="{margin_top}" x2="{margin_left}" y2="{base_y}" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>')
+    parts.append(f'<line x1="{width - margin_right}" y1="{margin_top}" x2="{width - margin_right}" y2="{base_y}" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>')
+    parts.append(f'<line x1="{margin_left}" y1="{base_y}" x2="{width - margin_right}" y2="{base_y}" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>')
+    parts.append(f'<text x="{margin_left}" y="{18}" text-anchor="start" font-size="13" fill="#eff4ff">{html_escape(title)}</text>')
+    parts.append(f'<text x="{margin_left}" y="{height - 18}" text-anchor="start" font-size="11" fill="#dbe5ff">Messstellen</text>')
+    parts.append(f'<text x="{width - margin_right}" y="{height - 18}" text-anchor="end" font-size="11" fill="#dbe5ff">{html_escape(effort_label)}</text>')
+
+    line_points = []
+    for idx, (label, count, effort) in enumerate(zip(labels, counts, efforts)):
+        center_x = margin_left + (idx + 0.5) * (plot_width / max(label_count, 1))
+        bar_x = center_x - (bar_width / 2)
+        bar_height = (count / count_max) * plot_height if count_max else 0
+        bar_y = base_y - bar_height
+        effort_y = y_right(effort)
+
+        parts.append(f'<rect x="{bar_x:.2f}" y="{bar_y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" rx="6" ry="6" fill="#67a9ff" fill-opacity="0.88"/>')
+
+        if mode == "Wert im Balken":
+            label_text = f"{int(round(effort))} min"
+            text_y = bar_y + 18 if bar_height >= 24 else max(bar_y - 6, margin_top + 14)
+            parts.append(f'<text x="{center_x:.2f}" y="{text_y:.2f}" text-anchor="middle" font-size="11" font-weight="600" fill="#ffffff">{html_escape(label_text)}</text>')
+        else:
+            line_points.append((center_x, effort_y))
+
+        parts.append(f'<text x="{center_x:.2f}" y="{height - 34}" text-anchor="middle" font-size="10" fill="#dbe5ff">{html_escape(str(label))}</text>')
+        parts.append(f'<text x="{center_x:.2f}" y="{bar_y - 6:.2f}" text-anchor="middle" font-size="11" fill="#ffffff">{int(round(count))}</text>')
+
+    if mode == "Zweite Achse" and len(line_points) >= 2:
+        path_d = "M " + " L ".join(f"{x:.2f} {y:.2f}" for x, y in line_points)
+        parts.append(f'<path d="{path_d}" fill="none" stroke="#ffce5c" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>')
+        for x, y in line_points:
+            parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4.5" fill="#ffce5c" stroke="#1f2f52" stroke-width="1.2"/>')
+    elif mode == "Zweite Achse" and len(line_points) == 1:
+        x, y = line_points[0]
+        parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4.5" fill="#ffce5c" stroke="#1f2f52" stroke-width="1.2"/>')
+
+    parts.append('</svg>')
+    parts.append(
+        '<div style="font-size: 0.8rem; color: #dbe5ff; margin-top: 0.35rem;">'
+        f'Blaue Balken = Messstellen, gelbe Linie = {html_escape(effort_label)}.'
+        '</div>'
+    )
+    return "".join(parts)
 
 
 @st.cache_data(show_spinner=False)
@@ -2794,12 +2922,42 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                     key="phase_overview_mode",
                 )
                 if view_mode == "Nach Prio" and not overview["prio_counts"].empty:
-                    chart_df = overview["prio_counts"].set_index("prio_stage")[["messstellen"]]
-                    st.bar_chart(chart_df, height=320)
+                    chart_style = st.radio(
+                        "Zeitaufwand darstellen als",
+                        ["Zweite Achse", "Wert im Balken"],
+                        horizontal=True,
+                        key="phase_overview_style",
+                    )
+                    chart_html = _build_overview_svg(
+                        overview["prio_counts"],
+                        "prio_stage",
+                        "messstellen",
+                        "aufwand_plus_puffer_min",
+                        chart_style,
+                        "Messstellen und Aufwand nach Prio",
+                        "Aufwand (Min.)",
+                    )
+                    if chart_html:
+                        st.components.v1.html(chart_html, height=430, scrolling=False)
                     st.dataframe(overview["prio_counts"], use_container_width=True, height=180, column_config=build_column_config(overview["prio_counts"], allow_manual_edit=False))
                 elif view_mode == "Nach Phase" and not overview["phase_counts"].empty:
-                    chart_df = overview["phase_counts"].set_index("phase")[["messstellen"]]
-                    st.bar_chart(chart_df, height=320)
+                    chart_style = st.radio(
+                        "Zeitaufwand darstellen als",
+                        ["Zweite Achse", "Wert im Balken"],
+                        horizontal=True,
+                        key="phase_overview_style",
+                    )
+                    chart_html = _build_overview_svg(
+                        overview["phase_counts"],
+                        "phase",
+                        "messstellen",
+                        "aufwand_plus_puffer_min",
+                        chart_style,
+                        "Messstellen und Aufwand nach Phase",
+                        "Aufwand (Min.)",
+                    )
+                    if chart_html:
+                        st.components.v1.html(chart_html, height=430, scrolling=False)
                     st.dataframe(overview["phase_counts"], use_container_width=True, height=180, column_config=build_column_config(overview["phase_counts"], allow_manual_edit=False))
                 elif view_mode == "Phase x Prio" and not overview["phase_prio_matrix"].empty:
                     chart_df = overview["phase_prio_matrix"].set_index("phase")
