@@ -2634,9 +2634,13 @@ def apply_filters(df: pd.DataFrame, prefix: str, show_sidebar_filters: bool) -> 
     with st.sidebar.expander("Numerische Filter", expanded=False) as num_box:
         selected_numeric = num_box.multiselect("Spalten auswählen", numeric_cols, key=f"{prefix}_num_cols")
         numeric_ranges: Dict[str, tuple] = {}
+        numeric_bounds_df = st.session_state.get("raw_source_df")
+        if not isinstance(numeric_bounds_df, pd.DataFrame) or numeric_bounds_df.empty:
+            numeric_bounds_df = df
         for col in selected_numeric:
-            # Keep each slider independent by deriving bounds from original df.
-            col_num = pd.to_numeric(df[col], errors="coerce")
+            # Keep each slider independent by deriving bounds from the raw source data.
+            source_col = numeric_bounds_df[col] if col in numeric_bounds_df.columns else df[col]
+            col_num = pd.to_numeric(source_col, errors="coerce")
             if not col_num.notna().any():
                 continue
             cmin = float(col_num.min())
@@ -4273,6 +4277,7 @@ def main() -> None:
         st.sidebar.number_input("Stunden pro Person/Tag", min_value=1.0, value=float(st.session_state.get("cap_hours_day", 7)), key="cap_hours_day")
 
     df_raw = load_csv_from_path(selected_path)
+    st.session_state["raw_source_df"] = df_raw.copy()
 
     if "datalogger_prefilter_on" not in st.session_state:
         st.session_state["datalogger_prefilter_on"] = False
@@ -4300,6 +4305,10 @@ def main() -> None:
             datalogger_count_raw, _ = count_datalogger_rows(df_raw, description_col=datalogger_description_col)
             st.caption(f"Datenlogger in Originaldatei: {datalogger_count_raw}")
             st.caption("Wirkung: entfernt die Zeilen vor Entscheidungsbaum und Phasenplan.")
+            if st.session_state.get("datalogger_prefilter_on", False):
+                st.warning("Datenlogger-Vorfilter ist aktiv und reduziert die Basis für alle weiteren Ansichten.")
+            else:
+                st.caption("Datenlogger-Vorfilter ist inaktiv.")
         else:
             st.caption("Keine geeignete Textspalte für die Messstellenbeschreibung gefunden.")
 
