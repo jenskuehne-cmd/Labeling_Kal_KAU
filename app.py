@@ -870,7 +870,8 @@ def default_criteria_set() -> Dict[str, Any]:
         "notes": "KAU MS Relabeling Standardlogik",
         "config": {
             "asset_id_length_gt": 30,
-            "time_scope_months_max": 5,
+            "time_scope_start_date": "2026-08-10",
+            "time_scope_end_date": "2027-01-31",
             "time_immediate_interval_lt": 12,
             "access_easy_patterns": [
                 r"\beinfach\b",
@@ -1042,6 +1043,16 @@ def normalize_decision_tree_config(config: Dict[str, Any] | None) -> Dict[str, A
         if key in config:
             try:
                 normalized[key] = int(float(config.get(key, normalized[key])))
+            except Exception:
+                pass
+
+    for key in ["time_scope_start_date", "time_scope_end_date"]:
+        value = config.get(key)
+        if isinstance(value, date):
+            normalized[key] = value.isoformat()
+        elif isinstance(value, str) and value.strip():
+            try:
+                normalized[key] = date.fromisoformat(value.strip()).isoformat()
             except Exception:
                 pass
 
@@ -1251,17 +1262,25 @@ def classify_time_class(df: pd.DataFrame, golive_reference: date, config: Dict[s
 
     due_dt = pd.to_datetime(df[due_col], errors="coerce", dayfirst=True)
     interval_num = pd.to_numeric(df[interval_col], errors="coerce") if interval_col else pd.Series([pd.NA] * len(df), index=df.index)
-    golive_ts = pd.Timestamp(golive_reference)
-    months_from_golive = (due_dt - golive_ts).dt.days / 30.4375
+    start_raw = config.get("time_scope_start_date", golive_reference.isoformat() if isinstance(golive_reference, date) else str(golive_reference))
+    end_raw = config.get("time_scope_end_date", "2027-01-31")
+    try:
+        scope_start = pd.Timestamp(date.fromisoformat(str(start_raw)))
+    except Exception:
+        scope_start = pd.Timestamp(golive_reference)
+    try:
+        scope_end = pd.Timestamp(date.fromisoformat(str(end_raw)))
+    except Exception:
+        scope_end = scope_start + pd.DateOffset(months=int(config.get("time_scope_months_max", 5)))
 
     result = pd.Series(["MS_Time_Long"] * len(df), index=df.index, dtype="string")
     valid_due = due_dt.notna()
 
-    immediate_mask = valid_due & (months_from_golive <= 0) & (pd.to_numeric(interval_num, errors="coerce") < float(config.get("time_immediate_interval_lt", 12)))
+    immediate_mask = valid_due & (due_dt < scope_start) & (pd.to_numeric(interval_num, errors="coerce") < float(config.get("time_immediate_interval_lt", 12)))
     immediate_mask = immediate_mask.fillna(False)
-    scope_mask = valid_due & (months_from_golive.between(0, float(config.get("time_scope_months_max", 5)), inclusive="both")) & (pd.to_numeric(interval_num, errors="coerce") >= float(config.get("time_immediate_interval_lt", 12)))
+    scope_mask = valid_due & due_dt.between(scope_start, scope_end, inclusive="both")
     scope_mask = scope_mask.fillna(False)
-    long_mask = valid_due & ~(immediate_mask | scope_mask)
+    long_mask = valid_due & (due_dt > scope_end)
     long_mask = long_mask.fillna(False)
 
     result.loc[immediate_mask] = "T0_Immediate"
@@ -3448,8 +3467,11 @@ def render_prio34_shutdown_recipe(df: pd.DataFrame) -> None:
 def render_golive_hint() -> None:
     st.markdown("#### Go-Live Regelhilfe")
     ref = st.session_state.get("golive_reference_date", date(2026, 8, 10))
+    cfg = get_active_decision_tree_config()
+    start = cfg.get("time_scope_start_date", ref.isoformat())
+    end = cfg.get("time_scope_end_date", "2027-01-31")
     st.caption(f"Aktuelles Go-Live Referenzdatum: {ref.isoformat()}")
-    st.caption("Für deinen Fall im Builder setzen: Interval < 12 UND months_from_golive >= 0 UND months_from_golive <= 5")
+    st.caption(f"Zeitfenster für iScope: Due Date von {start} bis {end}")
 
 
 TAB_HELP: Dict[str, Dict[str, List[str]]] = {
@@ -3544,15 +3566,28 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
             step=1,
             key="dt_asset_id_length_gt",
         )
-        cfg_scope = c2.number_input(
-            "iScope Fenster (Monate)",
-            min_value=0,
-            max_value=24,
-            value=int(cfg.get("time_scope_months_max", 5)),
-            step=1,
-            key="dt_time_scope_months_max",
+        start_default = cfg.get("time_scope_start_date") or st.session_state.get("golive_reference_date", date(2026, 8, 10)).isoformat()
+        end_default = cfg.get("time_scope_end_date") or "2027-01-31"
+        try:
+            start_default_date = date.fromisoformat(str(start_default))
+        except Exception:
+            start_default_date = date(2026, 8, 10)
+        try:
+            end_default_date = date.fromisoformat(str(end_default))
+        except Exception:
+            end_default_date = date(2027, 1, 31)
+        cfg_start = c2.date_input(
+            "iScope Start Due Date",
+            value=start_default_date,
+            key="dt_time_scope_start_date",
         )
-        cfg_interval = c3.number_input(
+        cfg_end = c3.date_input(
+            "iScope Ende Due Date",
+            value=end_default_date,
+            key="dt_time_scope_end_date",
+        )
+        c6, c7 = st.columns(2)
+        cfg_interval = c6.number_input(
             "Immediate wenn Intervall <",
             min_value=1,
             max_value=36,
@@ -3581,7 +3616,8 @@ def render_criteria_editor(df: pd.DataFrame) -> None:
         )
         current_cfg = {
             "asset_id_length_gt": int(cfg_asset),
-            "time_scope_months_max": int(cfg_scope),
+            "time_scope_start_date": cfg_start.isoformat() if isinstance(cfg_start, date) else str(cfg_start),
+            "time_scope_end_date": cfg_end.isoformat() if isinstance(cfg_end, date) else str(cfg_end),
             "time_immediate_interval_lt": int(cfg_interval),
             "access_easy_patterns": [p.strip() for p in easy_patterns.split(",") if p.strip()],
             "access_hard_patterns": [p.strip() for p in hard_patterns.split(",") if p.strip()],
@@ -3656,13 +3692,14 @@ def render_decision_tree(df: pd.DataFrame) -> None:
         cfg = get_active_decision_tree_config()
         c_cfg1, c_cfg2, c_cfg3 = st.columns(3)
         c_cfg1.metric("Legacy-Schwelle", int(cfg.get("asset_id_length_gt", 30)))
-        c_cfg2.metric("iScope Monate", int(cfg.get("time_scope_months_max", 5)))
-        c_cfg3.metric("Immediate Intervall <", int(cfg.get("time_immediate_interval_lt", 12)))
+        c_cfg2.metric("iScope Start", str(cfg.get("time_scope_start_date", "2026-08-10")))
+        c_cfg3.metric("iScope Ende", str(cfg.get("time_scope_end_date", "2027-01-31")))
+        st.caption(f"Immediate Intervall <: {int(cfg.get('time_immediate_interval_lt', 12))}")
         st.markdown(
             """
 1. Scope bestimmen: `qc_scope_status`
 2. QC-Ausschluss: `QC_PE_excluded` -> Ausschluss
-3. Zeitklasse: `time_class` (`T0_Immediate`, `MS_Time_iScope`, `MS_Time_Long`)
+3. Zeitklasse: `time_class` (`T0_Immediate`, `MS_Time_iScope`, `MS_Time_Long`) über Due Date
 4. Legacy-Klasse: `ms_legacy_class` (`MS_legacy_krit`/`MS_legacy_iO`)
 5. Zugänglichkeit: `access_class` (`ABC`/`easy`/`unknown`)
 6. Ergebnis: `prio_stage`, `prio_substage`, `relabel_phase`, `recommended_window`, `unterbruch_erforderlich`
