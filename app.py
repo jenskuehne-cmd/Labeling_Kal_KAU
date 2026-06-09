@@ -2565,6 +2565,7 @@ def render_view_preset_tools(prefix: str, view_name: str) -> None:
                 incoming_state = remap_state_prefix(incoming_state, prefix)
                 st.session_state[f"{prefix}_pending_preset_state"] = incoming_state
                 st.session_state[f"{prefix}_preset_loaded_msg"] = True
+                st.session_state["pending_active_prefix"] = prefix
                 st.rerun()
             except Exception as exc:
                 st.error(f"Preset konnte nicht geladen werden: {exc}")
