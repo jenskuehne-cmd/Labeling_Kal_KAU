@@ -403,6 +403,7 @@ def build_phase_plan_excel_export(
     export_meta: Dict[str, Any],
     decision_tree_step_summary: pd.DataFrame | None = None,
     decision_tree_step_detail: pd.DataFrame | None = None,
+    decision_tree_path_detail: pd.DataFrame | None = None,
     decision_tree_funnel: pd.DataFrame | None = None,
     decision_tree_funnel_steps: pd.DataFrame | None = None,
 ) -> bytes:
@@ -441,6 +442,7 @@ def build_phase_plan_excel_export(
             ("Entscheidungsbaum-Schritte", export_meta.get("summary", {}).get("decision_tree_steps", "")),
             ("Wasserfall-Zusammenfassung", export_meta.get("summary", {}).get("decision_tree_funnel_summary_rows", "")),
             ("Wasserfall-Schritte", export_meta.get("summary", {}).get("decision_tree_funnel_rows", "")),
+            ("Pfad-Detail-Zeilen", export_meta.get("summary", {}).get("decision_tree_path_detail_rows", "")),
             ("QC gefiltert", export_meta.get("summary", {}).get("qc_filtered_rows", "")),
             ("Ausgefiltert gesamt", export_meta.get("summary", {}).get("decision_tree_filtered_rows", "")),
             ("Final P1", export_meta.get("summary", {}).get("final_p1", "")),
@@ -513,6 +515,34 @@ def build_phase_plan_excel_export(
                 ]
             )
         write_sheet("decision_tree_step_detail", detail_frame)
+
+    if decision_tree_path_detail is not None:
+        path_detail_frame = decision_tree_path_detail
+        if path_detail_frame.empty:
+            path_detail_frame = pd.DataFrame(
+                [
+                    {
+                        "row_index": 0,
+                        "asset_id": "",
+                        "gebäude_mu": "",
+                        "standort": "",
+                        "beschreibung": "",
+                        "qc_scope_status": "",
+                        "ms_legacy_class": "",
+                        "time_class": "",
+                        "access_class": "",
+                        "qc_step": "",
+                        "legacy_step": "",
+                        "time_step": "",
+                        "access_step": "",
+                        "final_prio": "",
+                        "decision_status": "",
+                        "decision_reason": "",
+                        "decision_path": "",
+                    }
+                ]
+            )
+        write_sheet("decision_tree_path_detail", path_detail_frame)
 
     if decision_tree_funnel is not None:
         funnel_frame = decision_tree_funnel
@@ -1945,6 +1975,137 @@ def build_decision_tree_funnel_tables(df: pd.DataFrame) -> tuple[pd.DataFrame, p
 
     step_df = pd.DataFrame(step_rows)
     return wide_df, step_df
+
+
+def build_decision_tree_path_detail_table(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    working = add_derived_time_columns(df)
+    group_col = next((c for c in ["Gebäude / MU", "Gebaeude / MU", "Standort", "Location", "Site"] if c in working.columns), None)
+    asset_col = next((c for c in ["Asset ID", "AssetID", "Asset_Id"] if c in working.columns), None)
+    standort_col = next((c for c in ["Standort", "Location", "Site"] if c in working.columns), None)
+    description_col = find_description_column(working)
+
+    def text_value(value: Any) -> str:
+        if value is None or pd.isna(value):
+            return ""
+        return str(value).strip()
+
+    rows: list[dict[str, Any]] = []
+    prio_sort = {"excluded": 0, "P1": 1, "P2": 2, "P2A": 3, "P3": 4, "P4": 5, "P5": 6, "P6": 7}
+
+    for idx, row in working.iterrows():
+        qc_status = text_value(row.get("qc_scope_status"))
+        legacy_class = text_value(row.get("ms_legacy_class"))
+        time_class = text_value(row.get("time_class"))
+        access_class = text_value(row.get("access_class"))
+        asset_id = text_value(row.get(asset_col, "")) if asset_col else ""
+        gebaeude_mu = text_value(row.get(group_col, "")) if group_col else ""
+        standort = text_value(row.get(standort_col, "")) if standort_col else ""
+        beschreibung = text_value(row.get(description_col, "")) if description_col else ""
+
+        qc_step = "QC_PE Filter"
+        legacy_step = ""
+        time_step = ""
+        access_step = ""
+        final_prio = "P6"
+        decision_reason = ""
+        path_parts = ["QC_PE"]
+
+        if qc_status == "QC_PE_excluded":
+            final_prio = "excluded"
+            decision_reason = "QC ausgeschlossen"
+            path_parts.append("ausgeschlossen")
+        else:
+            path_parts.append("im Scope")
+            if legacy_class == "MS_legacy_krit":
+                legacy_step = "Legacy-ID >30"
+                path_parts.append(legacy_step)
+                if time_class in {"T0_Immediate", "MS_Time_iScope"}:
+                    time_step = "Kalibrierung bis Jan 27"
+                    path_parts.append(time_step)
+                    if access_class == "ABC":
+                        access_step = "Schwer zugänglich"
+                        final_prio = "P1"
+                        decision_reason = "Lange Legacy-ID, im Zeitfenster und schwer zugänglich"
+                    elif access_class == "easy":
+                        access_step = "Einfach zugänglich"
+                        final_prio = "P2"
+                        decision_reason = "Lange Legacy-ID, im Zeitfenster und einfach zugänglich"
+                    else:
+                        access_step = "Unklar / Rest"
+                        final_prio = "P6"
+                        decision_reason = "Lange Legacy-ID, im Zeitfenster, aber Zugänglichkeit unklar"
+                elif time_class == "MS_Time_Long":
+                    time_step = "Nach Jan 27"
+                    path_parts.append(time_step)
+                    if access_class == "ABC":
+                        access_step = "Schwer zugänglich"
+                        final_prio = "P3"
+                        decision_reason = "Lange Legacy-ID, nach Jan 27 und schwer zugänglich"
+                    elif access_class == "easy":
+                        access_step = "Einfach zugänglich"
+                        final_prio = "P2A"
+                        decision_reason = "Lange Legacy-ID, nach Jan 27 und einfach zugänglich"
+                    else:
+                        access_step = "Unklar / Rest"
+                        final_prio = "P6"
+                        decision_reason = "Lange Legacy-ID, nach Jan 27, aber Zugänglichkeit unklar"
+                else:
+                    time_step = "Zeit unbekannt"
+                    final_prio = "P6"
+                    decision_reason = "Lange Legacy-ID, aber Zeitklasse unbekannt"
+            elif legacy_class == "MS_legacy_iO":
+                legacy_step = "Legacy-ID <=30"
+                path_parts.append(legacy_step)
+                if access_class == "ABC":
+                    access_step = "Schwer zugänglich"
+                    final_prio = "P4"
+                    decision_reason = "Handhabbare Legacy-ID, aber schwer zugänglich"
+                elif access_class == "easy":
+                    access_step = "Einfach zugänglich"
+                    final_prio = "P5"
+                    decision_reason = "Handhabbare Legacy-ID und einfach zugänglich"
+                else:
+                    access_step = "Unklar / Rest"
+                    final_prio = "P6"
+                    decision_reason = "Handhabbare Legacy-ID, aber Zugänglichkeit unklar"
+            else:
+                legacy_step = "Legacy unbekannt"
+                final_prio = "P6"
+                decision_reason = "Legacy-Klasse unbekannt"
+
+        path_parts.append(final_prio if final_prio != "excluded" else "excluded")
+        decision_path = " -> ".join(path_parts)
+        rows.append(
+            {
+                "row_index": int(idx),
+                "asset_id": asset_id,
+                "gebäude_mu": gebaeude_mu,
+                "standort": standort,
+                "beschreibung": beschreibung,
+                "qc_scope_status": qc_status,
+                "ms_legacy_class": legacy_class,
+                "time_class": time_class,
+                "access_class": access_class,
+                "qc_step": qc_step,
+                "legacy_step": legacy_step,
+                "time_step": time_step,
+                "access_step": access_step,
+                "final_prio": final_prio,
+                "decision_status": "excluded" if final_prio == "excluded" else "in_prio",
+                "decision_reason": decision_reason,
+                "decision_path": decision_path,
+                "path_sort": prio_sort.get(final_prio, 99),
+            }
+        )
+
+    detail_df = pd.DataFrame(rows)
+    if not detail_df.empty:
+        sort_cols = [c for c in ["path_sort", "final_prio", "gebäude_mu", "standort", "asset_id"] if c in detail_df.columns]
+        detail_df = detail_df.sort_values(sort_cols, kind="stable").drop(columns=["path_sort"], errors="ignore")
+    return detail_df
 
 def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_lists: Dict[str, set]) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not criteria or not criteria.get("rules"):
@@ -3615,6 +3776,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
             raw_export = raw_export[[c for c in raw_export.columns if c in raw_export.columns]]
             decision_tree_steps_df = pd.DataFrame()
             decision_tree_step_detail_df = pd.DataFrame()
+            decision_tree_path_detail_df = pd.DataFrame()
             decision_tree_funnel_df = pd.DataFrame()
             decision_tree_funnel_steps_df = pd.DataFrame()
             if source_df is not None and not source_df.empty:
@@ -3623,6 +3785,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                     st.session_state.get("active_criteria_set", {}),
                     {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))},
                 )
+                decision_tree_path_detail_df = build_decision_tree_path_detail_table(source_df.copy())
                 decision_tree_funnel_df, decision_tree_funnel_steps_df = build_decision_tree_funnel_tables(source_df.copy())
             decision_tree_steps_export_df = decision_tree_steps_df
             final_row = decision_tree_steps_export_df.iloc[-1].to_dict() if not decision_tree_steps_export_df.empty else {}
@@ -3668,6 +3831,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                     "decision_tree_filtered_rows": int(decision_tree_steps_export_df["neu_ausgefiltert"].fillna(0).sum()) if not decision_tree_steps_export_df.empty and "neu_ausgefiltert" in decision_tree_steps_export_df.columns else 0,
                     "decision_tree_funnel_summary_rows": int(len(decision_tree_funnel_df)),
                     "decision_tree_funnel_rows": int(len(decision_tree_funnel_steps_df)),
+                    "decision_tree_path_detail_rows": int(len(decision_tree_path_detail_df)),
                     "final_p1": int(final_row.get("P1_total", 0)) if final_row else 0,
                     "final_p2": int(final_row.get("P2_total", 0)) if final_row else 0,
                     "final_p2a": int(final_row.get("P2A_total", 0)) if final_row else 0,
@@ -3686,6 +3850,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                 "phase_plan_preview": json_safe(grp.head(20).to_dict(orient="records")),
                 "decision_tree_steps_preview": json_safe(decision_tree_steps_export_df.head(20).to_dict(orient="records")) if not decision_tree_steps_export_df.empty else [],
                 "decision_tree_step_detail_preview": json_safe(decision_tree_step_detail_df.head(50).to_dict(orient="records")) if not decision_tree_step_detail_df.empty else [],
+                "decision_tree_path_detail_preview": json_safe(decision_tree_path_detail_df.head(50).to_dict(orient="records")) if not decision_tree_path_detail_df.empty else [],
                 "decision_tree_funnel_preview": json_safe(decision_tree_funnel_df.head(20).to_dict(orient="records")) if not decision_tree_funnel_df.empty else [],
                 "decision_tree_funnel_steps_preview": json_safe(decision_tree_funnel_steps_df.head(20).to_dict(orient="records")) if not decision_tree_funnel_steps_df.empty else [],
             }
@@ -3697,6 +3862,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                 export_meta,
                 decision_tree_steps_export_df,
                 decision_tree_step_detail_df,
+                decision_tree_path_detail_df,
                 decision_tree_funnel_df,
                 decision_tree_funnel_steps_df,
             )
