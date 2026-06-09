@@ -437,7 +437,16 @@ def build_phase_plan_excel_export(
             ("Gesamt-Personentage", export_meta.get("summary", {}).get("total_personentage", "")),
             ("Gesamt-Wochenbedarf", export_meta.get("summary", {}).get("total_wochenbedarf", "")),
             ("Entscheidungsbaum-Schritte", export_meta.get("summary", {}).get("decision_tree_steps", "")),
-            ("Ausgefiltert", export_meta.get("summary", {}).get("decision_tree_filtered_rows", "")),
+            ("QC gefiltert", export_meta.get("summary", {}).get("qc_filtered_rows", "")),
+            ("Ausgefiltert gesamt", export_meta.get("summary", {}).get("decision_tree_filtered_rows", "")),
+            ("Final P1", export_meta.get("summary", {}).get("final_p1", "")),
+            ("Final P2", export_meta.get("summary", {}).get("final_p2", "")),
+            ("Final P2A", export_meta.get("summary", {}).get("final_p2a", "")),
+            ("Final P3", export_meta.get("summary", {}).get("final_p3", "")),
+            ("Final P4", export_meta.get("summary", {}).get("final_p4", "")),
+            ("Final P5", export_meta.get("summary", {}).get("final_p5", "")),
+            ("Final P6", export_meta.get("summary", {}).get("final_p6", "")),
+            ("Final In Scope", export_meta.get("summary", {}).get("final_in_scope", "")),
         ]
         for key, value in cover_rows:
             ws.append([_sanitize_excel_scalar(key), _sanitize_excel_scalar(value)])
@@ -1511,10 +1520,90 @@ def build_decision_tree_exclusion_trace(
     working = add_derived_time_columns(df)
     summary_rows: List[Dict[str, Any]] = []
     detail_rows: List[Dict[str, Any]] = []
-    exclude_mask = pd.Series([False] * len(working), index=working.index)
 
     group_col = next((c for c in ["Gebäude / MU", "Gebaeude / MU", "Standort", "Location", "Site"] if c in working.columns), None)
     asset_col = next((c for c in ["Asset ID", "AssetID", "Asset_Id"] if c in working.columns), None)
+    prio_order = ["P1", "P2", "P2A", "P3", "P4", "P5", "P6"]
+
+    def count_prios(active_mask: pd.Series, prio_series: pd.Series) -> Dict[str, int]:
+        return {p: int((active_mask & (prio_series == p)).sum()) for p in prio_order}
+
+    def group_examples(mask: pd.Series) -> tuple[int, str]:
+        if not group_col or not mask.any():
+            return 0, ""
+        values = (
+            working.loc[mask, group_col]
+            .astype("string")
+            .fillna("")
+            .str.strip()
+            .replace("", pd.NA)
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        return len(values), ", ".join(values[:5])
+
+    current_in_scope = pd.Series([True] * len(working), index=working.index)
+    prio_stage = pd.Series(["P6"] * len(working), index=working.index, dtype="string")
+    prio_rank = pd.Series([6.0] * len(working), index=working.index, dtype="float64")
+
+    qc_mask = pd.Series([False] * len(working), index=working.index)
+    if "qc_scope_status" in working.columns:
+        qc_mask = working["qc_scope_status"].astype("string").fillna("").eq("QC_PE_excluded")
+    qc_removed = int(qc_mask.sum())
+    if qc_removed:
+        current_in_scope = current_in_scope & ~qc_mask
+        for idx in working.index[qc_mask]:
+            row = working.loc[idx]
+            detail_rows.append(
+                {
+                    "schritt_nr": 0,
+                    "schritt": "QC_PE Filter",
+                    "aktion": "exclude_qc",
+                    "flow_event": "exclude",
+                    "from_prio": "QC_PE",
+                    "to_prio": "excluded",
+                    "rule_id": "qc_scope_status",
+                    "asset_id": row.get(asset_col, "") if asset_col else "",
+                    "gebäude_mu": row.get(group_col, "") if group_col else "",
+                    "standort": row.get("Standort", row.get("Location", row.get("Site", ""))),
+                }
+            )
+
+    initial_in_scope = int(current_in_scope.sum())
+    initial_counts = count_prios(current_in_scope, prio_stage)
+    summary_rows.append(
+        {
+            "schritt_nr": 0,
+            "regel_id": "qc_scope_status",
+            "schritt": "QC_PE Filter",
+            "aktion": "exclude_qc",
+            "ziel_prio": "",
+            "input_total": int(len(working)),
+            "treffer": qc_removed,
+            "neu_ausgefiltert": qc_removed,
+            "verschoben_nach_prio": 0,
+            "remaining_after_step": initial_in_scope,
+            "ausgeschieden_kumulativ": qc_removed,
+            "betroffene_gebäude_mu": group_examples(qc_mask)[0],
+            "beispiel_gebäude_mu": group_examples(qc_mask)[1],
+            "delta_p1": initial_counts["P1"],
+            "delta_p2": initial_counts["P2"],
+            "delta_p2a": initial_counts["P2A"],
+            "delta_p3": initial_counts["P3"],
+            "delta_p4": initial_counts["P4"],
+            "delta_p5": initial_counts["P5"],
+            "delta_p6": initial_counts["P6"],
+            "P1_total": initial_counts["P1"],
+            "P2_total": initial_counts["P2"],
+            "P2A_total": initial_counts["P2A"],
+            "P3_total": initial_counts["P3"],
+            "P4_total": initial_counts["P4"],
+            "P5_total": initial_counts["P5"],
+            "P6_total": initial_counts["P6"],
+        }
+    )
 
     rule_order = 0
     for raw_rule in criteria.get("rules", []) if isinstance(criteria, dict) else []:
@@ -1526,60 +1615,99 @@ def build_decision_tree_exclusion_trace(
         action = str(rule.get("action", "exclude_from_prio")).strip()
         rid = str(rule.get("id", f"rule_{rule_order}")).strip()
         reason = str(rule.get("reason", "")).strip() or rid
-        priority = str(rule.get("priority", "")).strip()
+        priority = str(rule.get("priority", "")).strip().upper()
         phase = str(rule.get("relabel_phase", rule.get("phase", ""))).strip()
+        target_rank = {"P1": 1.0, "P2": 2.0, "P2A": 2.5, "P3": 3.0, "P4": 4.0, "P5": 5.0, "P6": 6.0}.get(priority, 6.0)
 
-        mask = build_rule_mask(working, rule, reference_lists)
+        before_counts = count_prios(current_in_scope, prio_stage)
+        before_total = int(current_in_scope.sum())
+        mask = build_rule_mask(working, rule, reference_lists) & current_in_scope
         matched_count = int(mask.sum())
-        newly_excluded = mask & ~exclude_mask if action == "exclude_from_prio" else pd.Series([False] * len(working), index=working.index)
-        newly_excluded_count = int(newly_excluded.sum())
+        exclude_count = 0
+        moved_count = 0
+        affected_mask = pd.Series([False] * len(working), index=working.index)
 
-        group_values: List[str] = []
-        if group_col and newly_excluded_count:
-            group_values = (
-                working.loc[newly_excluded, group_col]
-                .astype("string")
-                .fillna("")
-                .str.strip()
-                .replace("", pd.NA)
-                .dropna()
-                .astype(str)
-                .unique()
-                .tolist()
-            )
-
-        if action == "exclude_from_prio" and newly_excluded_count:
-            for idx in working.index[newly_excluded]:
+        if action == "exclude_from_prio":
+            affected_mask = mask & current_in_scope
+            exclude_count = int(affected_mask.sum())
+            current_in_scope = current_in_scope & ~affected_mask
+            for idx in working.index[affected_mask]:
                 row = working.loc[idx]
                 detail_rows.append(
                     {
-                        "row_index": int(idx) if str(idx).isdigit() else idx,
+                        "schritt_nr": rule_order,
+                        "schritt": reason,
+                        "aktion": "exclude_from_prio",
+                        "flow_event": "exclude",
+                        "from_prio": str(prio_stage.loc[idx]),
+                        "to_prio": "excluded",
+                        "rule_id": rid,
+                        "priority": priority,
+                        "phase": phase,
                         "asset_id": row.get(asset_col, "") if asset_col else "",
                         "gebäude_mu": row.get(group_col, "") if group_col else "",
                         "standort": row.get("Standort", row.get("Location", row.get("Site", ""))),
-                        "exclude_step": reason,
-                        "exclude_rule_id": rid,
-                        "exclude_rule_order": rule_order,
-                        "priority": priority,
-                        "phase": phase,
-                        "decision_reason": row.get("decision_reason", ""),
                     }
                 )
-            exclude_mask = exclude_mask | newly_excluded
+        elif action == "assign_prio":
+            affected_mask = mask & current_in_scope
+            upgrade_mask = affected_mask & (target_rank < prio_rank)
+            moved_count = int(upgrade_mask.sum())
+            for idx in working.index[upgrade_mask]:
+                row = working.loc[idx]
+                detail_rows.append(
+                    {
+                        "schritt_nr": rule_order,
+                        "schritt": reason,
+                        "aktion": "assign_prio",
+                        "flow_event": "move",
+                        "from_prio": str(prio_stage.loc[idx]),
+                        "to_prio": priority or str(prio_stage.loc[idx]),
+                        "rule_id": rid,
+                        "priority": priority,
+                        "phase": phase,
+                        "asset_id": row.get(asset_col, "") if asset_col else "",
+                        "gebäude_mu": row.get(group_col, "") if group_col else "",
+                        "standort": row.get("Standort", row.get("Location", row.get("Site", ""))),
+                    }
+                )
+            prio_stage.loc[upgrade_mask] = priority or prio_stage.loc[upgrade_mask]
+            prio_rank.loc[upgrade_mask] = target_rank
+        else:
+            affected_mask = mask & current_in_scope
 
+        after_counts = count_prios(current_in_scope, prio_stage)
+        current_total = int(current_in_scope.sum())
+        groups_n, groups_preview = group_examples(affected_mask)
         summary_rows.append(
             {
                 "schritt_nr": rule_order,
                 "regel_id": rid,
                 "schritt": reason,
                 "aktion": action,
-                "prioritaet": priority,
-                "phase": phase,
+                "ziel_prio": priority,
+                "input_total": before_total,
                 "treffer": matched_count,
-                "neu_ausgefiltert": newly_excluded_count,
-                "neu_ausgefiltert_negativ": f"-{newly_excluded_count}" if newly_excluded_count else "0",
-                "betroffene_gebäude_mu": len(group_values),
-                "beispiel_gebäude_mu": ", ".join(group_values[:5]),
+                "neu_ausgefiltert": exclude_count,
+                "verschoben_nach_prio": moved_count,
+                "remaining_after_step": current_total,
+                "ausgeschieden_kumulativ": int((~current_in_scope).sum()),
+                "betroffene_gebäude_mu": groups_n,
+                "beispiel_gebäude_mu": groups_preview,
+                "delta_p1": after_counts["P1"] - before_counts["P1"],
+                "delta_p2": after_counts["P2"] - before_counts["P2"],
+                "delta_p2a": after_counts["P2A"] - before_counts["P2A"],
+                "delta_p3": after_counts["P3"] - before_counts["P3"],
+                "delta_p4": after_counts["P4"] - before_counts["P4"],
+                "delta_p5": after_counts["P5"] - before_counts["P5"],
+                "delta_p6": after_counts["P6"] - before_counts["P6"],
+                "P1_total": after_counts["P1"],
+                "P2_total": after_counts["P2"],
+                "P2A_total": after_counts["P2A"],
+                "P3_total": after_counts["P3"],
+                "P4_total": after_counts["P4"],
+                "P5_total": after_counts["P5"],
+                "P6_total": after_counts["P6"],
             }
         )
 
@@ -1588,7 +1716,7 @@ def build_decision_tree_exclusion_trace(
     if not summary_df.empty:
         summary_df = summary_df.sort_values(["schritt_nr"], kind="stable")
     if not detail_df.empty:
-        detail_df = detail_df.sort_values(["exclude_rule_order", "exclude_step", "asset_id"], kind="stable")
+        detail_df = detail_df.sort_values(["schritt_nr", "flow_event", "asset_id"], kind="stable")
     return summary_df, detail_df
 
 def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_lists: Dict[str, set]) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -3267,8 +3395,7 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                     {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))},
                 )
             decision_tree_steps_export_df = decision_tree_steps_df
-            if not decision_tree_steps_export_df.empty and "neu_ausgefiltert" in decision_tree_steps_export_df.columns:
-                decision_tree_steps_export_df = decision_tree_steps_export_df[decision_tree_steps_export_df["neu_ausgefiltert"].fillna(0).astype(int) > 0].copy()
+            final_row = decision_tree_steps_export_df.iloc[-1].to_dict() if not decision_tree_steps_export_df.empty else {}
             raw_export_preview_cols = [
                 c
                 for c in [
@@ -3308,7 +3435,16 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                     "total_personentage": float(grp["personentage"].sum()),
                     "total_wochenbedarf": float(grp["wochenbedarf"].sum()),
                     "decision_tree_steps": int(len(decision_tree_steps_export_df)),
-                    "decision_tree_filtered_rows": int(decision_tree_steps_export_df["neu_ausgefiltert"].sum()) if not decision_tree_steps_export_df.empty and "neu_ausgefiltert" in decision_tree_steps_export_df.columns else 0,
+                    "decision_tree_filtered_rows": int(decision_tree_steps_export_df["neu_ausgefiltert"].fillna(0).sum()) if not decision_tree_steps_export_df.empty and "neu_ausgefiltert" in decision_tree_steps_export_df.columns else 0,
+                    "final_p1": int(final_row.get("P1_total", 0)) if final_row else 0,
+                    "final_p2": int(final_row.get("P2_total", 0)) if final_row else 0,
+                    "final_p2a": int(final_row.get("P2A_total", 0)) if final_row else 0,
+                    "final_p3": int(final_row.get("P3_total", 0)) if final_row else 0,
+                    "final_p4": int(final_row.get("P4_total", 0)) if final_row else 0,
+                    "final_p5": int(final_row.get("P5_total", 0)) if final_row else 0,
+                    "final_p6": int(final_row.get("P6_total", 0)) if final_row else 0,
+                    "final_in_scope": int(final_row.get("remaining_after_step", 0)) if final_row else 0,
+                    "qc_filtered_rows": int(final_row.get("neu_ausgefiltert", 0)) if final_row else 0,
                 },
                 "raw_classified_preview": json_safe(
                     raw_export[raw_export_preview_cols].head(50).to_dict(orient="records")
