@@ -403,6 +403,8 @@ def build_phase_plan_excel_export(
     export_meta: Dict[str, Any],
     decision_tree_step_summary: pd.DataFrame | None = None,
     decision_tree_step_detail: pd.DataFrame | None = None,
+    decision_tree_funnel: pd.DataFrame | None = None,
+    decision_tree_funnel_steps: pd.DataFrame | None = None,
 ) -> bytes:
     buf = BytesIO()
     wb = Workbook(write_only=True)
@@ -437,6 +439,8 @@ def build_phase_plan_excel_export(
             ("Gesamt-Personentage", export_meta.get("summary", {}).get("total_personentage", "")),
             ("Gesamt-Wochenbedarf", export_meta.get("summary", {}).get("total_wochenbedarf", "")),
             ("Entscheidungsbaum-Schritte", export_meta.get("summary", {}).get("decision_tree_steps", "")),
+            ("Wasserfall-Zusammenfassung", export_meta.get("summary", {}).get("decision_tree_funnel_summary_rows", "")),
+            ("Wasserfall-Schritte", export_meta.get("summary", {}).get("decision_tree_funnel_rows", "")),
             ("QC gefiltert", export_meta.get("summary", {}).get("qc_filtered_rows", "")),
             ("Ausgefiltert gesamt", export_meta.get("summary", {}).get("decision_tree_filtered_rows", "")),
             ("Final P1", export_meta.get("summary", {}).get("final_p1", "")),
@@ -509,6 +513,18 @@ def build_phase_plan_excel_export(
                 ]
             )
         write_sheet("decision_tree_step_detail", detail_frame)
+
+    if decision_tree_funnel is not None:
+        funnel_frame = decision_tree_funnel
+        if funnel_frame.empty:
+            funnel_frame = pd.DataFrame([{"ziel_prio": "", "pfad": "", "final_count": 0}])
+        write_sheet("decision_tree_funnel", funnel_frame)
+
+    if decision_tree_funnel_steps is not None:
+        funnel_steps_frame = decision_tree_funnel_steps
+        if funnel_steps_frame.empty:
+            funnel_steps_frame = pd.DataFrame([{"stufe": "", "basis": 0, "ja": 0, "nein": 0}])
+        write_sheet("decision_tree_funnel_steps", funnel_steps_frame)
 
     wb.save(buf)
     return buf.getvalue()
@@ -1718,6 +1734,217 @@ def build_decision_tree_exclusion_trace(
     if not detail_df.empty:
         detail_df = detail_df.sort_values(["schritt_nr", "flow_event", "asset_id"], kind="stable")
     return summary_df, detail_df
+
+
+def build_decision_tree_funnel_tables(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if df is None or df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    working = add_derived_time_columns(df)
+    total = int(len(working))
+
+    qc_scope = working["qc_scope_status"].astype("string").fillna("").ne("QC_PE_excluded") if "qc_scope_status" in working.columns else pd.Series([True] * len(working), index=working.index)
+    scope_total = int(qc_scope.sum())
+
+    legacy_krit = qc_scope & (working["ms_legacy_class"].astype("string").fillna("") == "MS_legacy_krit")
+    legacy_ok = qc_scope & (working["ms_legacy_class"].astype("string").fillna("") == "MS_legacy_iO")
+    time_scope = working["time_class"].astype("string").fillna("").isin(["T0_Immediate", "MS_Time_iScope"])
+    time_long = working["time_class"].astype("string").fillna("").eq("MS_Time_Long")
+    access_hard = working["access_class"].astype("string").fillna("").eq("ABC")
+    access_easy = working["access_class"].astype("string").fillna("").eq("easy")
+    access_unknown = working["access_class"].astype("string").fillna("").eq("unknown")
+
+    p1 = qc_scope & legacy_krit & time_scope & access_hard
+    p2 = qc_scope & legacy_krit & time_scope & (access_easy | access_unknown)
+    p2_easy = qc_scope & legacy_krit & time_scope & access_easy
+    p2_unknown = qc_scope & legacy_krit & time_scope & access_unknown
+    p2a = qc_scope & legacy_krit & time_long & access_easy
+    p3 = qc_scope & legacy_krit & time_long & access_hard
+    p4 = qc_scope & legacy_ok & access_hard
+    p5 = qc_scope & legacy_ok & access_easy
+    p6 = qc_scope & ~(p1 | p2 | p2a | p3 | p4 | p5)
+
+    def group_count(mask: pd.Series) -> int:
+        return int(mask.sum())
+
+    rows = [
+        {
+            "ziel_prio": "QC_PE",
+            "pfad": "Start -> QC_PE Filter",
+            "gesamt_start": total,
+            "nach_qc": scope_total,
+            "legacy_gt_30": "",
+            "kal_bis_jan27": "",
+            "nach_jan27": "",
+            "schwer_zugaenglich": "",
+            "einfach_zugaenglich": "",
+            "unklar": "",
+            "final_count": scope_total,
+            "qc_filtered": total - scope_total,
+        },
+        {
+            "ziel_prio": "P1",
+            "pfad": "QC_PE -> Legacy-ID >30 -> Kal bis Jan 27 -> Schwer zugänglich",
+            "gesamt_start": total,
+            "nach_qc": scope_total,
+            "legacy_gt_30": group_count(legacy_krit),
+            "kal_bis_jan27": group_count(legacy_krit & time_scope),
+            "nach_jan27": group_count(legacy_krit & time_long),
+            "schwer_zugaenglich": group_count(p1),
+            "einfach_zugaenglich": "",
+            "unklar": "",
+            "final_count": group_count(p1),
+            "qc_filtered": "",
+        },
+        {
+            "ziel_prio": "P2",
+            "pfad": "QC_PE -> Legacy-ID >30 -> Kal bis Jan 27 -> Einfach/unklar zugänglich",
+            "gesamt_start": total,
+            "nach_qc": scope_total,
+            "legacy_gt_30": group_count(legacy_krit),
+            "kal_bis_jan27": group_count(legacy_krit & time_scope),
+            "nach_jan27": "",
+            "schwer_zugaenglich": "",
+            "einfach_zugaenglich": group_count(p2_easy),
+            "unklar": group_count(p2_unknown),
+            "final_count": group_count(p2),
+            "qc_filtered": "",
+        },
+        {
+            "ziel_prio": "P2A",
+            "pfad": "QC_PE -> Legacy-ID >30 -> Nach Jan 27 -> Einfach zugänglich",
+            "gesamt_start": total,
+            "nach_qc": scope_total,
+            "legacy_gt_30": group_count(legacy_krit),
+            "kal_bis_jan27": "",
+            "nach_jan27": group_count(legacy_krit & time_long),
+            "schwer_zugaenglich": "",
+            "einfach_zugaenglich": group_count(p2a),
+            "unklar": "",
+            "final_count": group_count(p2a),
+            "qc_filtered": "",
+        },
+        {
+            "ziel_prio": "P3",
+            "pfad": "QC_PE -> Legacy-ID >30 -> Nach Jan 27 -> Schwer zugänglich",
+            "gesamt_start": total,
+            "nach_qc": scope_total,
+            "legacy_gt_30": group_count(legacy_krit),
+            "kal_bis_jan27": "",
+            "nach_jan27": group_count(legacy_krit & time_long),
+            "schwer_zugaenglich": group_count(p3),
+            "einfach_zugaenglich": "",
+            "unklar": "",
+            "final_count": group_count(p3),
+            "qc_filtered": "",
+        },
+        {
+            "ziel_prio": "P4",
+            "pfad": "QC_PE -> Legacy-ID <=30 -> Schwer zugänglich",
+            "gesamt_start": total,
+            "nach_qc": scope_total,
+            "legacy_gt_30": group_count(legacy_ok),
+            "kal_bis_jan27": "",
+            "nach_jan27": "",
+            "schwer_zugaenglich": group_count(p4),
+            "einfach_zugaenglich": "",
+            "unklar": "",
+            "final_count": group_count(p4),
+            "qc_filtered": "",
+        },
+        {
+            "ziel_prio": "P5",
+            "pfad": "QC_PE -> Legacy-ID <=30 -> Einfach zugänglich",
+            "gesamt_start": total,
+            "nach_qc": scope_total,
+            "legacy_gt_30": group_count(legacy_ok),
+            "kal_bis_jan27": "",
+            "nach_jan27": "",
+            "schwer_zugaenglich": "",
+            "einfach_zugaenglich": group_count(p5),
+            "unklar": "",
+            "final_count": group_count(p5),
+            "qc_filtered": "",
+        },
+        {
+            "ziel_prio": "P6",
+            "pfad": "QC_PE -> Rest / nicht zugeordnet",
+            "gesamt_start": total,
+            "nach_qc": scope_total,
+            "legacy_gt_30": "",
+            "kal_bis_jan27": "",
+            "nach_jan27": "",
+            "schwer_zugaenglich": "",
+            "einfach_zugaenglich": "",
+            "unklar": "",
+            "final_count": group_count(p6),
+            "qc_filtered": "",
+        },
+    ]
+
+    wide_df = pd.DataFrame(rows)
+
+    step_rows: list[dict[str, Any]] = []
+
+    def add_step(
+        pfad: str,
+        schritt_nr: int,
+        schritt: str,
+        basis_mask: pd.Series | int,
+        ja_mask: pd.Series | int,
+        nein_mask: pd.Series | int,
+        ziel: str,
+        note: str = "",
+    ) -> None:
+        step_rows.append(
+            {
+                "pfad": pfad,
+                "schritt_nr": schritt_nr,
+                "schritt": schritt,
+                "basis": group_count(basis_mask) if isinstance(basis_mask, pd.Series) else int(basis_mask),
+                "im_pfad": group_count(ja_mask) if isinstance(ja_mask, pd.Series) else int(ja_mask),
+                "raus_gefallen": group_count(nein_mask) if isinstance(nein_mask, pd.Series) else int(nein_mask),
+                "kumulativ_bis_hier": group_count(ja_mask) if isinstance(ja_mask, pd.Series) else int(ja_mask),
+                "ziel": ziel,
+                "hinweis": note,
+            }
+        )
+
+    add_step("P1", 1, "QC_PE Filter", total, qc_scope, ~qc_scope, "alle Pfade")
+    add_step("P1", 2, "Legacy-ID >30", qc_scope, legacy_krit, legacy_ok, "P1/P2/P2A/P3")
+    add_step("P1", 3, "Kalibrierung bis Jan 27", legacy_krit, legacy_krit & time_scope, legacy_krit & time_long, "P1/P2")
+    add_step("P1", 4, "Schwer zugänglich", legacy_krit & time_scope, p1, p2, "P1")
+
+    add_step("P2", 1, "QC_PE Filter", total, qc_scope, ~qc_scope, "alle Pfade")
+    add_step("P2", 2, "Legacy-ID >30", qc_scope, legacy_krit, legacy_ok, "P1/P2/P2A/P3")
+    add_step("P2", 3, "Kalibrierung bis Jan 27", legacy_krit, legacy_krit & time_scope, legacy_krit & time_long, "P1/P2")
+    add_step("P2", 4, "Einfach / unbekannt", legacy_krit & time_scope, p2, p1, "P2")
+
+    add_step("P2A", 1, "QC_PE Filter", total, qc_scope, ~qc_scope, "alle Pfade")
+    add_step("P2A", 2, "Legacy-ID >30", qc_scope, legacy_krit, legacy_ok, "P1/P2/P2A/P3")
+    add_step("P2A", 3, "Nach Jan 27", legacy_krit, legacy_krit & time_long, legacy_krit & time_scope, "P2A/P3")
+    add_step("P2A", 4, "Einfach zugänglich", legacy_krit & time_long, p2a, p3, "P2A")
+
+    add_step("P3", 1, "QC_PE Filter", total, qc_scope, ~qc_scope, "alle Pfade")
+    add_step("P3", 2, "Legacy-ID >30", qc_scope, legacy_krit, legacy_ok, "P1/P2/P2A/P3")
+    add_step("P3", 3, "Nach Jan 27", legacy_krit, legacy_krit & time_long, legacy_krit & time_scope, "P2A/P3")
+    add_step("P3", 4, "Schwer zugänglich", legacy_krit & time_long, p3, p2a, "P3")
+
+    add_step("P4", 1, "QC_PE Filter", total, qc_scope, ~qc_scope, "alle Pfade")
+    add_step("P4", 2, "Legacy-ID <=30", qc_scope, legacy_ok, legacy_krit, "P4/P5/P6")
+    add_step("P4", 3, "Schwer zugänglich", legacy_ok, p4, legacy_ok & ~access_hard, "P4")
+
+    add_step("P5", 1, "QC_PE Filter", total, qc_scope, ~qc_scope, "alle Pfade")
+    add_step("P5", 2, "Legacy-ID <=30", qc_scope, legacy_ok, legacy_krit, "P4/P5/P6")
+    add_step("P5", 3, "Einfach zugänglich", legacy_ok, p5, legacy_ok & ~access_easy, "P5")
+
+    add_step("P6", 1, "QC_PE Filter", total, qc_scope, ~qc_scope, "alle Pfade")
+    add_step("P6", 2, "Legacy-ID >30", qc_scope, legacy_krit, legacy_ok, "P1/P2/P2A/P3")
+    add_step("P6", 3, "Legacy-ID <=30", qc_scope, legacy_ok, legacy_krit, "P4/P5/P6")
+    add_step("P6", 4, "Rest / nicht zugeordnet", scope_total, p6, scope_total - group_count(p6), "P6")
+
+    step_df = pd.DataFrame(step_rows)
+    return wide_df, step_df
 
 def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_lists: Dict[str, set]) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not criteria or not criteria.get("rules"):
@@ -3388,12 +3615,15 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
             raw_export = raw_export[[c for c in raw_export.columns if c in raw_export.columns]]
             decision_tree_steps_df = pd.DataFrame()
             decision_tree_step_detail_df = pd.DataFrame()
+            decision_tree_funnel_df = pd.DataFrame()
+            decision_tree_funnel_steps_df = pd.DataFrame()
             if source_df is not None and not source_df.empty:
                 decision_tree_steps_df, decision_tree_step_detail_df = build_decision_tree_exclusion_trace(
                     source_df.copy(),
                     st.session_state.get("active_criteria_set", {}),
                     {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))},
                 )
+                decision_tree_funnel_df, decision_tree_funnel_steps_df = build_decision_tree_funnel_tables(source_df.copy())
             decision_tree_steps_export_df = decision_tree_steps_df
             final_row = decision_tree_steps_export_df.iloc[-1].to_dict() if not decision_tree_steps_export_df.empty else {}
             raw_export_preview_cols = [
@@ -3436,6 +3666,8 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                     "total_wochenbedarf": float(grp["wochenbedarf"].sum()),
                     "decision_tree_steps": int(len(decision_tree_steps_export_df)),
                     "decision_tree_filtered_rows": int(decision_tree_steps_export_df["neu_ausgefiltert"].fillna(0).sum()) if not decision_tree_steps_export_df.empty and "neu_ausgefiltert" in decision_tree_steps_export_df.columns else 0,
+                    "decision_tree_funnel_summary_rows": int(len(decision_tree_funnel_df)),
+                    "decision_tree_funnel_rows": int(len(decision_tree_funnel_steps_df)),
                     "final_p1": int(final_row.get("P1_total", 0)) if final_row else 0,
                     "final_p2": int(final_row.get("P2_total", 0)) if final_row else 0,
                     "final_p2a": int(final_row.get("P2A_total", 0)) if final_row else 0,
@@ -3454,6 +3686,8 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                 "phase_plan_preview": json_safe(grp.head(20).to_dict(orient="records")),
                 "decision_tree_steps_preview": json_safe(decision_tree_steps_export_df.head(20).to_dict(orient="records")) if not decision_tree_steps_export_df.empty else [],
                 "decision_tree_step_detail_preview": json_safe(decision_tree_step_detail_df.head(50).to_dict(orient="records")) if not decision_tree_step_detail_df.empty else [],
+                "decision_tree_funnel_preview": json_safe(decision_tree_funnel_df.head(20).to_dict(orient="records")) if not decision_tree_funnel_df.empty else [],
+                "decision_tree_funnel_steps_preview": json_safe(decision_tree_funnel_steps_df.head(20).to_dict(orient="records")) if not decision_tree_funnel_steps_df.empty else [],
             }
             export_csv = grp.to_csv(index=False).encode("utf-8-sig")
             raw_export_csv = raw_export.to_csv(index=False).encode("utf-8-sig")
@@ -3463,6 +3697,8 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                 export_meta,
                 decision_tree_steps_export_df,
                 decision_tree_step_detail_df,
+                decision_tree_funnel_df,
+                decision_tree_funnel_steps_df,
             )
             export_zip = build_named_export_zip(
                 {
