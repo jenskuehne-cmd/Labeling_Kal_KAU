@@ -170,6 +170,8 @@ def json_safe(value: Any) -> Any:
 def is_forbidden_widget_key(key: str) -> bool:
     return (
         "_preset_" in key
+        or key.endswith("_group_detail_pick")
+        or key.endswith("_group_detail_cols")
         or "_editor" in key
         or "__filter_store" in key
         or key.endswith("_qc_excluded_df")
@@ -311,7 +313,11 @@ def reset_last_session() -> None:
 def collect_view_state(prefix: str) -> Dict[str, Any]:
     stored = get_filter_store(prefix)
     if stored:
-        return stored
+        return {
+            key: value
+            for key, value in stored.items()
+            if not key.endswith("_group_detail_pick") and not key.endswith("_group_detail_cols")
+        }
     state = {}
     for key, value in st.session_state.items():
         if key.startswith(f"{prefix}_"):
@@ -2562,6 +2568,21 @@ def render_view_preset_tools(prefix: str, view_name: str) -> None:
                 st.rerun()
             except Exception as exc:
                 st.error(f"Preset konnte nicht geladen werden: {exc}")
+
+    c5, c6 = st.columns([1, 1])
+    with c5:
+        if st.button("Preset löschen", key=f"{prefix}_preset_clear_btn"):
+            for key in [
+                f"{prefix}_preset_name",
+                f"{prefix}_preset_note",
+                f"{prefix}_preset_loaded_msg",
+                f"{prefix}_pending_preset_state",
+            ]:
+                st.session_state.pop(key, None)
+            st.success("Preset-Metadaten gelöscht. Die aktuellen Filter bleiben erhalten.")
+            st.rerun()
+    with c6:
+        st.caption("Die Detailgruppenauswahl wird nicht mehr im Preset gespeichert.")
 
 
 def apply_filters(df: pd.DataFrame, prefix: str, show_sidebar_filters: bool) -> pd.DataFrame:
