@@ -397,7 +397,13 @@ def _sanitize_excel_frame(df: pd.DataFrame) -> pd.DataFrame:
     return cleaned
 
 
-def build_phase_plan_excel_export(grp: pd.DataFrame, raw_export: pd.DataFrame, export_meta: Dict[str, Any]) -> bytes:
+def build_phase_plan_excel_export(
+    grp: pd.DataFrame,
+    raw_export: pd.DataFrame,
+    export_meta: Dict[str, Any],
+    decision_tree_step_summary: pd.DataFrame | None = None,
+    decision_tree_step_detail: pd.DataFrame | None = None,
+) -> bytes:
     buf = BytesIO()
     wb = Workbook(write_only=True)
 
@@ -430,6 +436,8 @@ def build_phase_plan_excel_export(grp: pd.DataFrame, raw_export: pd.DataFrame, e
             ("Messstellen", export_meta.get("summary", {}).get("rows", "")),
             ("Gesamt-Personentage", export_meta.get("summary", {}).get("total_personentage", "")),
             ("Gesamt-Wochenbedarf", export_meta.get("summary", {}).get("total_wochenbedarf", "")),
+            ("Entscheidungsbaum-Schritte", export_meta.get("summary", {}).get("decision_tree_steps", "")),
+            ("Ausgefiltert", export_meta.get("summary", {}).get("decision_tree_filtered_rows", "")),
         ]
         for key, value in cover_rows:
             ws.append([_sanitize_excel_scalar(key), _sanitize_excel_scalar(value)])
@@ -458,6 +466,40 @@ def build_phase_plan_excel_export(grp: pd.DataFrame, raw_export: pd.DataFrame, e
         }
         rules_df = rules_df.rename(columns={k: v for k, v in rename_map.items() if k in rules_df.columns})
     write_sheet("decision_tree_rules", rules_df)
+
+    if decision_tree_step_summary is not None:
+        summary_frame = decision_tree_step_summary
+        if summary_frame.empty:
+            summary_frame = pd.DataFrame(
+                [
+                    {
+                        "schritt": "Keine Messstellen ausgefiltert",
+                        "neu_ausgefiltert": 0,
+                        "neu_ausgefiltert_negativ": "0",
+                        "betroffene_gebäude_mu": 0,
+                        "beispiel_gebäude_mu": "",
+                    }
+                ]
+            )
+        write_sheet("decision_tree_steps", summary_frame)
+    if decision_tree_step_detail is not None:
+        detail_frame = decision_tree_step_detail
+        if detail_frame.empty:
+            detail_frame = pd.DataFrame(
+                [
+                    {
+                        "exclude_step": "Keine Messstellen ausgefiltert",
+                        "exclude_rule_id": "",
+                        "exclude_rule_order": "",
+                        "asset_id": "",
+                        "gebäude_mu": "",
+                        "standort": "",
+                        "priority": "",
+                        "phase": "",
+                    }
+                ]
+            )
+        write_sheet("decision_tree_step_detail", detail_frame)
 
     wb.save(buf)
     return buf.getvalue()
@@ -1412,6 +1454,143 @@ def normalize_rule(rule: Dict[str, Any]) -> Dict[str, Any]:
         normalized["mark_shutdown"] = normalized.get("mark_shutdown", "").strip().lower() in {"1", "true", "yes", "ja"}
     return normalized
 
+
+def build_rule_mask(working: pd.DataFrame, rule: Dict[str, Any], reference_lists: Dict[str, set]) -> pd.Series:
+    rule = normalize_rule(rule)
+    mask = pd.Series([False] * len(working), index=working.index)
+    if isinstance(rule.get("when"), dict):
+        return evaluate_condition(working, rule.get("when"), reference_lists).fillna(False)
+
+    col = rule.get("column")
+    rtype = str(rule.get("type", "")).strip()
+    if col not in working.columns:
+        return mask
+
+    if rtype == "numeric_gt":
+        val = float(rule.get("value", 0))
+        mask = pd.to_numeric(working[col], errors="coerce") > val
+    elif rtype == "string_length_lt":
+        val = int(rule.get("value", 0))
+        mask = working[col].astype("string").str.len().fillna(0) < val
+    elif rtype == "regex_match":
+        pattern = str(rule.get("pattern", "")).strip()
+        if pattern:
+            try:
+                re.compile(pattern)
+                mask = working[col].astype("string").str.contains(pattern, case=False, regex=True, na=False)
+            except re.error:
+                pass
+    elif rtype == "date_between":
+        start = str(rule.get("start", "")).strip()
+        end = str(rule.get("end", "")).strip()
+        parsed = pd.to_datetime(working[col], errors="coerce")
+        if start and end:
+            try:
+                d1 = pd.to_datetime(start)
+                d2 = pd.to_datetime(end)
+                mask = parsed.between(d1, d2)
+            except Exception:
+                pass
+    elif rtype == "ref_list_match":
+        ref_name = str(rule.get("ref_list", "")).strip()
+        ref_values = reference_lists.get(ref_name, set())
+        if ref_values:
+            mask = working[col].astype("string").str.strip().isin(ref_values)
+
+    return mask.fillna(False)
+
+
+def build_decision_tree_exclusion_trace(
+    df: pd.DataFrame,
+    criteria: Dict[str, Any],
+    reference_lists: Dict[str, set],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if df is None or df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    working = add_derived_time_columns(df)
+    summary_rows: List[Dict[str, Any]] = []
+    detail_rows: List[Dict[str, Any]] = []
+    exclude_mask = pd.Series([False] * len(working), index=working.index)
+
+    group_col = next((c for c in ["Gebäude / MU", "Gebaeude / MU", "Standort", "Location", "Site"] if c in working.columns), None)
+    asset_col = next((c for c in ["Asset ID", "AssetID", "Asset_Id"] if c in working.columns), None)
+
+    rule_order = 0
+    for raw_rule in criteria.get("rules", []) if isinstance(criteria, dict) else []:
+        rule = normalize_rule(raw_rule)
+        if not rule.get("active", True):
+            continue
+
+        rule_order += 1
+        action = str(rule.get("action", "exclude_from_prio")).strip()
+        rid = str(rule.get("id", f"rule_{rule_order}")).strip()
+        reason = str(rule.get("reason", "")).strip() or rid
+        priority = str(rule.get("priority", "")).strip()
+        phase = str(rule.get("relabel_phase", rule.get("phase", ""))).strip()
+
+        mask = build_rule_mask(working, rule, reference_lists)
+        matched_count = int(mask.sum())
+        newly_excluded = mask & ~exclude_mask if action == "exclude_from_prio" else pd.Series([False] * len(working), index=working.index)
+        newly_excluded_count = int(newly_excluded.sum())
+
+        group_values: List[str] = []
+        if group_col and newly_excluded_count:
+            group_values = (
+                working.loc[newly_excluded, group_col]
+                .astype("string")
+                .fillna("")
+                .str.strip()
+                .replace("", pd.NA)
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+        if action == "exclude_from_prio" and newly_excluded_count:
+            for idx in working.index[newly_excluded]:
+                row = working.loc[idx]
+                detail_rows.append(
+                    {
+                        "row_index": int(idx) if str(idx).isdigit() else idx,
+                        "asset_id": row.get(asset_col, "") if asset_col else "",
+                        "gebäude_mu": row.get(group_col, "") if group_col else "",
+                        "standort": row.get("Standort", row.get("Location", row.get("Site", ""))),
+                        "exclude_step": reason,
+                        "exclude_rule_id": rid,
+                        "exclude_rule_order": rule_order,
+                        "priority": priority,
+                        "phase": phase,
+                        "decision_reason": row.get("decision_reason", ""),
+                    }
+                )
+            exclude_mask = exclude_mask | newly_excluded
+
+        summary_rows.append(
+            {
+                "schritt_nr": rule_order,
+                "regel_id": rid,
+                "schritt": reason,
+                "aktion": action,
+                "prioritaet": priority,
+                "phase": phase,
+                "treffer": matched_count,
+                "neu_ausgefiltert": newly_excluded_count,
+                "neu_ausgefiltert_negativ": f"-{newly_excluded_count}" if newly_excluded_count else "0",
+                "betroffene_gebäude_mu": len(group_values),
+                "beispiel_gebäude_mu": ", ".join(group_values[:5]),
+            }
+        )
+
+    summary_df = pd.DataFrame(summary_rows)
+    detail_df = pd.DataFrame(detail_rows)
+    if not summary_df.empty:
+        summary_df = summary_df.sort_values(["schritt_nr"], kind="stable")
+    if not detail_df.empty:
+        detail_df = detail_df.sort_values(["exclude_rule_order", "exclude_step", "asset_id"], kind="stable")
+    return summary_df, detail_df
+
 def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_lists: Dict[str, set]) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not criteria or not criteria.get("rules"):
         included = df.copy()
@@ -1436,49 +1615,10 @@ def apply_criteria_rules(df: pd.DataFrame, criteria: Dict[str, Any], reference_l
         rule = normalize_rule(raw_rule)
         if not rule.get("active", True):
             continue
-        col = rule.get("column")
-        rtype = str(rule.get("type", "")).strip()
         reason = str(rule.get("reason", "")).strip() or str(rule.get("id", "rule"))
         rid = str(rule.get("id", "rule"))
         action = str(rule.get("action", "exclude_from_prio"))
-        mask = pd.Series([False] * len(working), index=working.index)
-
-        if isinstance(rule.get("when"), dict):
-            mask = evaluate_condition(working, rule.get("when"), reference_lists).fillna(False)
-        else:
-            if col not in working.columns:
-                continue
-            # Legacy flat rules remain supported.
-            if rtype == "numeric_gt":
-                val = float(rule.get("value", 0))
-                mask = pd.to_numeric(working[col], errors="coerce") > val
-            elif rtype == "string_length_lt":
-                val = int(rule.get("value", 0))
-                mask = working[col].astype("string").str.len().fillna(0) < val
-            elif rtype == "regex_match":
-                pattern = str(rule.get("pattern", "")).strip()
-                if pattern:
-                    try:
-                        re.compile(pattern)
-                        mask = working[col].astype("string").str.contains(pattern, case=False, regex=True, na=False)
-                    except re.error:
-                        pass
-            elif rtype == "date_between":
-                start = str(rule.get("start", "")).strip()
-                end = str(rule.get("end", "")).strip()
-                parsed = pd.to_datetime(working[col], errors="coerce")
-                if start and end:
-                    try:
-                        d1 = pd.to_datetime(start)
-                        d2 = pd.to_datetime(end)
-                        mask = parsed.between(d1, d2)
-                    except Exception:
-                        pass
-            elif rtype == "ref_list_match":
-                ref_name = str(rule.get("ref_list", "")).strip()
-                ref_values = reference_lists.get(ref_name, set())
-                if ref_values:
-                    mask = working[col].astype("string").str.strip().isin(ref_values)
+        mask = build_rule_mask(working, rule, reference_lists)
 
         if action == "exclude_from_prio":
             exclude_mask = exclude_mask | mask.fillna(False)
@@ -3033,7 +3173,7 @@ def render_exclusions(df_ex: pd.DataFrame) -> None:
         render_context_help("exclusions")
 
 
-def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> None:
+def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, source_df: pd.DataFrame | None = None) -> None:
     main_col, help_col = st.columns([4, 1.35])
     with main_col:
         st.markdown("### Phasenplan")
@@ -3118,6 +3258,17 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
 
             raw_export = df_in.copy()
             raw_export = raw_export[[c for c in raw_export.columns if c in raw_export.columns]]
+            decision_tree_steps_df = pd.DataFrame()
+            decision_tree_step_detail_df = pd.DataFrame()
+            if source_df is not None and not source_df.empty:
+                decision_tree_steps_df, decision_tree_step_detail_df = build_decision_tree_exclusion_trace(
+                    source_df.copy(),
+                    st.session_state.get("active_criteria_set", {}),
+                    {"qc_self_labeled_assets": set(st.session_state.get("qc_green_assets", []))},
+                )
+            decision_tree_steps_export_df = decision_tree_steps_df
+            if not decision_tree_steps_export_df.empty and "neu_ausgefiltert" in decision_tree_steps_export_df.columns:
+                decision_tree_steps_export_df = decision_tree_steps_export_df[decision_tree_steps_export_df["neu_ausgefiltert"].fillna(0).astype(int) > 0].copy()
             raw_export_preview_cols = [
                 c
                 for c in [
@@ -3156,6 +3307,8 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                     "rows": int(grp["anzahl_messstellen"].sum()),
                     "total_personentage": float(grp["personentage"].sum()),
                     "total_wochenbedarf": float(grp["wochenbedarf"].sum()),
+                    "decision_tree_steps": int(len(decision_tree_steps_export_df)),
+                    "decision_tree_filtered_rows": int(decision_tree_steps_export_df["neu_ausgefiltert"].sum()) if not decision_tree_steps_export_df.empty and "neu_ausgefiltert" in decision_tree_steps_export_df.columns else 0,
                 },
                 "raw_classified_preview": json_safe(
                     raw_export[raw_export_preview_cols].head(50).to_dict(orient="records")
@@ -3163,10 +3316,18 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None) -> No
                     else raw_export.head(50).to_dict(orient="records")
                 ),
                 "phase_plan_preview": json_safe(grp.head(20).to_dict(orient="records")),
+                "decision_tree_steps_preview": json_safe(decision_tree_steps_export_df.head(20).to_dict(orient="records")) if not decision_tree_steps_export_df.empty else [],
+                "decision_tree_step_detail_preview": json_safe(decision_tree_step_detail_df.head(50).to_dict(orient="records")) if not decision_tree_step_detail_df.empty else [],
             }
             export_csv = grp.to_csv(index=False).encode("utf-8-sig")
             raw_export_csv = raw_export.to_csv(index=False).encode("utf-8-sig")
-            export_xlsx = build_phase_plan_excel_export(grp, raw_export, export_meta)
+            export_xlsx = build_phase_plan_excel_export(
+                grp,
+                raw_export,
+                export_meta,
+                decision_tree_steps_export_df,
+                decision_tree_step_detail_df,
+            )
             export_zip = build_named_export_zip(
                 {
                     "phase_plan_aggregated.csv": export_csv,
@@ -3648,7 +3809,7 @@ def main() -> None:
     with tab8:
         render_decision_tree(df)
     with tab9:
-        render_phase_plan(criteria_all_in, source_path=selected_path)
+        render_phase_plan(criteria_all_in, source_path=selected_path, source_df=df.copy())
     with tab10:
         render_prio_matrix(criteria_all_in)
     with tab11:
