@@ -403,6 +403,81 @@ def _sanitize_excel_frame(df: pd.DataFrame) -> pd.DataFrame:
     return cleaned
 
 
+def build_priority_legend_table(config: Dict[str, Any] | None = None) -> pd.DataFrame:
+    cfg = normalize_decision_tree_config(config)
+    legacy_threshold = int(cfg.get("asset_id_length_gt", 30))
+    scope_start = str(cfg.get("time_scope_start_date", "2026-08-10"))
+    scope_end = str(cfg.get("time_scope_end_date", "2027-01-31"))
+    immediate_interval = int(cfg.get("time_immediate_interval_lt", 12))
+
+    rows = [
+        {
+            "prio": "P1",
+            "phase_typisch": "Shutdown_26",
+            "kurzbeschreibung": "Zeitkritisch im iScope-Fenster, lange Legacy-ID, schwer zugaenglich",
+            "due_date_kriterium": f"Due Date vor {scope_start} mit Intervall < {immediate_interval} oder Due Date {scope_start} bis {scope_end}",
+            "legacy_kriterium": f"Asset ID Laenge > {legacy_threshold} Zeichen",
+            "zugaenglichkeit": "ABC / schwer zugaenglich",
+            "planungsbedeutung": "Frueh einplanen, priorisiert bearbeiten, ggf. Shutdown-Fenster nutzen",
+        },
+        {
+            "prio": "P2",
+            "phase_typisch": "PostgL_bis_Oktober / Klaerung_Zugaenglichkeit",
+            "kurzbeschreibung": "Zeitkritisch im iScope-Fenster, lange Legacy-ID, einfach oder unklar zugaenglich",
+            "due_date_kriterium": f"Due Date vor {scope_start} mit Intervall < {immediate_interval} oder Due Date {scope_start} bis {scope_end}",
+            "legacy_kriterium": f"Asset ID Laenge > {legacy_threshold} Zeichen",
+            "zugaenglichkeit": "easy oder unknown",
+            "planungsbedeutung": "Direkt nach P1 planen; unknown-Faelle klaeren",
+        },
+        {
+            "prio": "P2A",
+            "phase_typisch": "PostgL_bis_Januar",
+            "kurzbeschreibung": "Lange Legacy-ID, nach iScope-Fenster, einfach zugaenglich",
+            "due_date_kriterium": f"Due Date nach {scope_end}",
+            "legacy_kriterium": f"Asset ID Laenge > {legacy_threshold} Zeichen",
+            "zugaenglichkeit": "easy",
+            "planungsbedeutung": "Nach P2 einplanen, wenn Kapazitaet bis Januar verfuegbar ist",
+        },
+        {
+            "prio": "P3",
+            "phase_typisch": "Shutdown_27",
+            "kurzbeschreibung": "Lange Legacy-ID, nach iScope-Fenster, schwer zugaenglich",
+            "due_date_kriterium": f"Due Date nach {scope_end}",
+            "legacy_kriterium": f"Asset ID Laenge > {legacy_threshold} Zeichen",
+            "zugaenglichkeit": "ABC / schwer zugaenglich",
+            "planungsbedeutung": "Fuer Shutdown 2027 oder vergleichbares Fenster vormerken",
+        },
+        {
+            "prio": "P4",
+            "phase_typisch": "Opportunistisch_im_Shutdown",
+            "kurzbeschreibung": "Legacy-ID handhabbar, aber schwer zugaenglich",
+            "due_date_kriterium": "Kein primaeres Zeitfenster-Kriterium",
+            "legacy_kriterium": f"Asset ID Laenge <= {legacy_threshold} Zeichen",
+            "zugaenglichkeit": "ABC / schwer zugaenglich",
+            "planungsbedeutung": "Opportunistisch mitnehmen, wenn Zugang oder Shutdown ohnehin geplant ist",
+        },
+        {
+            "prio": "P5",
+            "phase_typisch": "Backlog_optional",
+            "kurzbeschreibung": "Legacy-ID handhabbar und einfach zugaenglich",
+            "due_date_kriterium": "Kein primaeres Zeitfenster-Kriterium",
+            "legacy_kriterium": f"Asset ID Laenge <= {legacy_threshold} Zeichen",
+            "zugaenglichkeit": "easy",
+            "planungsbedeutung": "Backlog / optional spaeter planen",
+        },
+        {
+            "prio": "P6",
+            "phase_typisch": "Rest / nicht eindeutig zugeordnet",
+            "kurzbeschreibung": "Nicht eindeutig klassifiziert oder Restmenge",
+            "due_date_kriterium": "Nicht eindeutig oder kein Regelmatch",
+            "legacy_kriterium": "Nicht eindeutig oder kein Regelmatch",
+            "zugaenglichkeit": "unknown oder nicht passend zu P1-P5",
+            "planungsbedeutung": "Pruefen, Datenqualitaet klaeren oder bewusst im Backlog lassen",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
 def build_phase_plan_excel_export(
     grp: pd.DataFrame,
     raw_export: pd.DataFrame,
@@ -469,6 +544,7 @@ def build_phase_plan_excel_export(
 
     meta_rows = _flatten_for_rows(export_meta)
     write_kv_sheet("metadata", meta_rows)
+    write_sheet("priority_legend", build_priority_legend_table(st.session_state.get("active_criteria_set", {}).get("config", {})))
 
     criteria = st.session_state.get("active_criteria_set", {})
     rules = criteria.get("rules", []) if isinstance(criteria, dict) else []
