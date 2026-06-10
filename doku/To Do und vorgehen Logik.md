@@ -16,7 +16,9 @@
 - wenn ich eine Auswertung habe, wie kann ich dann aus der DIskussion die Änderungen einfügen - also zB sagt TObi nmein die sind P1 . wie mache ich dann einen Vermerk und pflege es ein, als Übersteuerung oder so. auch für einen neuen Ladezyklus oder Szenario.
 - kann man verschiedene Szenarien gegenüberstellen übersichtlich
 
-
+## Auswertung ToDo
+- kann man in der automatischen Auswertung einen Export generieren, der einem im Detail zeigt mit welchem Schritt aus dem Entscheidungsbaum welche Messstellen herausgefiltert wurden?
+- und das gleiche auch in der Zusammenfassung. Bei Schritt "Schwer zugänglich" = -1233 Messstellen (verteilt über die Gebäude/MU) ausgefiltert usw.
 
 
 
