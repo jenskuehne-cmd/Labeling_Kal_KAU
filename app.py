@@ -820,58 +820,79 @@ def _build_overview_svg(
     return "".join(wrapped)
 
 
-def _build_svg_png_download_html(svg_text: str, file_name: str, button_label: str) -> str:
-    if not svg_text:
-        return ""
-    return f"""
-<div style="margin-top: 0.35rem;">
-  <button id="download-png" style="
-    border: 1px solid #cbd5e1;
-    background: #ffffff;
-    color: #172033;
-    border-radius: 6px;
-    padding: 0.48rem 0.72rem;
-    font: 600 13px sans-serif;
-    cursor: pointer;
-  ">{html_escape(button_label)}</button>
-</div>
-<script>
-const svgText = {json.dumps(svg_text)};
-const fileName = {json.dumps(file_name)};
-const button = document.getElementById("download-png");
-button.addEventListener("click", async () => {{
-  const blob = new Blob([svgText], {{ type: "image/svg+xml;charset=utf-8" }});
-  const url = URL.createObjectURL(blob);
-  const image = new Image();
-  image.onload = () => {{
-    const viewBox = svgText.match(/viewBox="0 0 ([0-9.]+) ([0-9.]+)"/);
-    const width = viewBox ? Number(viewBox[1]) : image.naturalWidth;
-    const height = viewBox ? Number(viewBox[2]) : image.naturalHeight;
-    const canvas = document.createElement("canvas");
-    const scale = 2;
-    canvas.width = Math.max(1, Math.round(width * scale));
-    canvas.height = Math.max(1, Math.round(height * scale));
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.scale(scale, scale);
-    ctx.drawImage(image, 0, 0, width, height);
-    URL.revokeObjectURL(url);
-    canvas.toBlob((pngBlob) => {{
-      const pngUrl = URL.createObjectURL(pngBlob);
-      const link = document.createElement("a");
-      link.href = pngUrl;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(pngUrl);
-    }}, "image/png");
-  }};
-  image.src = url;
-}});
-</script>
-"""
+def build_phase_overview_png(
+    rows: pd.DataFrame,
+    label_col: str,
+    count_col: str,
+    effort_col: str,
+    mode: str,
+    title: str,
+) -> bytes | None:
+    if rows is None or rows.empty:
+        return None
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+
+    data = rows[[label_col, count_col, effort_col]].copy()
+    data[count_col] = pd.to_numeric(data[count_col], errors="coerce").fillna(0)
+    data[effort_col] = pd.to_numeric(data[effort_col], errors="coerce").fillna(0)
+    labels = [str(v) for v in data[label_col].tolist()]
+    counts = data[count_col].astype(float).tolist()
+    person_days = data[effort_col].astype(float).tolist()
+
+    fig, ax_count = plt.subplots(figsize=(10.5, 5.8), dpi=180)
+    fig.patch.set_facecolor("white")
+    ax_count.set_facecolor("white")
+
+    x = np.arange(len(labels))
+    bar_color = "#4b8fe2"
+    effort_color = "#c77900"
+    bars = ax_count.bar(x, counts, color=bar_color, width=0.46, label="Messstellen")
+
+    ax_count.set_title(title, loc="left", fontsize=13, fontweight="bold", color="#101827", pad=14)
+    ax_count.set_ylabel("Messstellen", color="#172033", fontsize=10)
+    ax_count.set_xticks(x)
+    ax_count.set_xticklabels(labels, fontsize=9)
+    ax_count.tick_params(axis="y", labelcolor="#172033", labelsize=9)
+    ax_count.tick_params(axis="x", colors="#172033", labelsize=9)
+    ax_count.grid(axis="y", color="#d9e2ef", linewidth=0.8, linestyle="--")
+    ax_count.set_axisbelow(True)
+
+    ax_days = ax_count.twinx()
+    ax_days.set_ylabel("Personentage", color=effort_color, fontsize=10)
+    ax_days.tick_params(axis="y", labelcolor=effort_color, labelsize=9)
+    if mode == "Zweite Achse":
+        ax_days.plot(x, person_days, color=effort_color, marker="o", linewidth=2.2, label="Personentage")
+
+    for bar, count, days in zip(bars, counts, person_days):
+        cx = bar.get_x() + bar.get_width() / 2
+        height = bar.get_height()
+        ax_count.text(cx, height + max(counts) * 0.015, f"{int(round(count))}", ha="center", va="bottom", fontsize=8.5, color="#172033", fontweight="bold")
+        inside_y = height * 0.88 if height > max(counts) * 0.12 else height + max(counts) * 0.08
+        va = "top" if height > max(counts) * 0.12 else "bottom"
+        ax_count.text(cx, inside_y, f"{days:.1f} PT", ha="center", va=va, fontsize=8.5, color=effort_color, fontweight="bold")
+
+    ax_count.spines["top"].set_visible(False)
+    ax_days.spines["top"].set_visible(False)
+    for spine in ["left", "bottom"]:
+        ax_count.spines[spine].set_color("#53657d")
+    ax_days.spines["right"].set_color("#53657d")
+
+    handles = [
+        plt.Line2D([0], [0], color=bar_color, lw=8),
+        plt.Line2D([0], [0], color=effort_color, lw=2.2, marker="o"),
+    ]
+    ax_count.legend(handles, ["Messstellen", "Personentage"], loc="upper left", bbox_to_anchor=(0, -0.12), frameon=False, ncol=2, fontsize=9)
+
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    buf = BytesIO()
+    fig.savefig(buf, format="png", facecolor="white", bbox_inches="tight", pad_inches=0.25)
+    plt.close(fig)
+    return buf.getvalue()
 
 
 @st.cache_data(show_spinner=False)
@@ -3924,15 +3945,24 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                             mime="image/svg+xml",
                             key="phase_overview_prio_svg_download",
                         )
-                        st.components.v1.html(
-                            _build_svg_png_download_html(
-                                chart_svg_export,
-                                "phasenplan_grafik_prio.png",
-                                "Grafik als PNG exportieren",
-                            ),
-                            height=52,
-                            scrolling=False,
+                        chart_png_export = build_phase_overview_png(
+                            overview["prio_counts"],
+                            "prio_stage",
+                            "messstellen",
+                            "personentage",
+                            chart_style,
+                            "Messstellen und Aufwand nach Prio",
                         )
+                        if chart_png_export:
+                            st.download_button(
+                                "Grafik als PNG exportieren",
+                                chart_png_export,
+                                file_name="phasenplan_grafik_prio.png",
+                                mime="image/png",
+                                key="phase_overview_prio_png_download",
+                            )
+                        else:
+                            st.caption("PNG-Export benötigt matplotlib. Bitte Abhängigkeiten aus requirements.txt installieren.")
                     st.dataframe(overview["prio_counts"], use_container_width=True, height=180, column_config=build_column_config(overview["prio_counts"], allow_manual_edit=False))
                 elif view_mode == "Nach Phase" and not overview["phase_counts"].empty:
                     chart_style = st.radio(
@@ -3973,15 +4003,24 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                             mime="image/svg+xml",
                             key="phase_overview_phase_svg_download",
                         )
-                        st.components.v1.html(
-                            _build_svg_png_download_html(
-                                chart_svg_export,
-                                "phasenplan_grafik_phase.png",
-                                "Grafik als PNG exportieren",
-                            ),
-                            height=52,
-                            scrolling=False,
+                        chart_png_export = build_phase_overview_png(
+                            overview["phase_counts"],
+                            "phase",
+                            "messstellen",
+                            "personentage",
+                            chart_style,
+                            "Messstellen und Aufwand nach Phase",
                         )
+                        if chart_png_export:
+                            st.download_button(
+                                "Grafik als PNG exportieren",
+                                chart_png_export,
+                                file_name="phasenplan_grafik_phase.png",
+                                mime="image/png",
+                                key="phase_overview_phase_png_download",
+                            )
+                        else:
+                            st.caption("PNG-Export benötigt matplotlib. Bitte Abhängigkeiten aus requirements.txt installieren.")
                     st.dataframe(overview["phase_counts"], use_container_width=True, height=180, column_config=build_column_config(overview["phase_counts"], allow_manual_edit=False))
                 elif view_mode == "Phase x Prio" and not overview["phase_prio_matrix"].empty:
                     chart_df = overview["phase_prio_matrix"].set_index("phase")
