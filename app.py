@@ -820,6 +820,60 @@ def _build_overview_svg(
     return "".join(wrapped)
 
 
+def _build_svg_png_download_html(svg_text: str, file_name: str, button_label: str) -> str:
+    if not svg_text:
+        return ""
+    return f"""
+<div style="margin-top: 0.35rem;">
+  <button id="download-png" style="
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #172033;
+    border-radius: 6px;
+    padding: 0.48rem 0.72rem;
+    font: 600 13px sans-serif;
+    cursor: pointer;
+  ">{html_escape(button_label)}</button>
+</div>
+<script>
+const svgText = {json.dumps(svg_text)};
+const fileName = {json.dumps(file_name)};
+const button = document.getElementById("download-png");
+button.addEventListener("click", async () => {{
+  const blob = new Blob([svgText], {{ type: "image/svg+xml;charset=utf-8" }});
+  const url = URL.createObjectURL(blob);
+  const image = new Image();
+  image.onload = () => {{
+    const viewBox = svgText.match(/viewBox="0 0 ([0-9.]+) ([0-9.]+)"/);
+    const width = viewBox ? Number(viewBox[1]) : image.naturalWidth;
+    const height = viewBox ? Number(viewBox[2]) : image.naturalHeight;
+    const canvas = document.createElement("canvas");
+    const scale = 2;
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(scale, scale);
+    ctx.drawImage(image, 0, 0, width, height);
+    URL.revokeObjectURL(url);
+    canvas.toBlob((pngBlob) => {{
+      const pngUrl = URL.createObjectURL(pngBlob);
+      const link = document.createElement("a");
+      link.href = pngUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(pngUrl);
+    }}, "image/png");
+  }};
+  image.src = url;
+}});
+</script>
+"""
+
+
 @st.cache_data(show_spinner=False)
 def load_qc_green_assets_from_xlsx(path_str: str, color_hex: str, asset_col_name: str) -> List[str]:
     wb = load_workbook(path_str, data_only=True)
@@ -3870,6 +3924,15 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                             mime="image/svg+xml",
                             key="phase_overview_prio_svg_download",
                         )
+                        st.components.v1.html(
+                            _build_svg_png_download_html(
+                                chart_svg_export,
+                                "phasenplan_grafik_prio.png",
+                                "Grafik als PNG exportieren",
+                            ),
+                            height=52,
+                            scrolling=False,
+                        )
                     st.dataframe(overview["prio_counts"], use_container_width=True, height=180, column_config=build_column_config(overview["prio_counts"], allow_manual_edit=False))
                 elif view_mode == "Nach Phase" and not overview["phase_counts"].empty:
                     chart_style = st.radio(
@@ -3909,6 +3972,15 @@ def render_phase_plan(df_in: pd.DataFrame, source_path: str | None = None, sourc
                             file_name="phasenplan_grafik_phase.svg",
                             mime="image/svg+xml",
                             key="phase_overview_phase_svg_download",
+                        )
+                        st.components.v1.html(
+                            _build_svg_png_download_html(
+                                chart_svg_export,
+                                "phasenplan_grafik_phase.png",
+                                "Grafik als PNG exportieren",
+                            ),
+                            height=52,
+                            scrolling=False,
                         )
                     st.dataframe(overview["phase_counts"], use_container_width=True, height=180, column_config=build_column_config(overview["phase_counts"], allow_manual_edit=False))
                 elif view_mode == "Phase x Prio" and not overview["phase_prio_matrix"].empty:
