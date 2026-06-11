@@ -478,6 +478,37 @@ def build_priority_legend_table(config: Dict[str, Any] | None = None) -> pd.Data
     return pd.DataFrame(rows)
 
 
+def build_final_assignment_table(path_detail: pd.DataFrame) -> pd.DataFrame:
+    if path_detail is None or path_detail.empty:
+        return pd.DataFrame(
+            columns=[
+                "asset_id",
+                "gebäude_mu",
+                "standort",
+                "beschreibung",
+                "endgueltige_prio",
+                "decision_status",
+                "decision_reason",
+                "decision_path",
+            ]
+        )
+
+    cols = [
+        "asset_id",
+        "gebäude_mu",
+        "standort",
+        "beschreibung",
+        "final_prio",
+        "decision_status",
+        "decision_reason",
+        "decision_path",
+    ]
+    existing_cols = [c for c in cols if c in path_detail.columns]
+    final_assignment = path_detail[existing_cols].copy()
+    final_assignment = final_assignment.rename(columns={"final_prio": "endgueltige_prio"})
+    return final_assignment
+
+
 def build_phase_plan_excel_export(
     grp: pd.DataFrame,
     raw_export: pd.DataFrame,
@@ -624,6 +655,7 @@ def build_phase_plan_excel_export(
                     }
                 ]
             )
+        write_sheet("final_assignment", build_final_assignment_table(path_detail_frame))
         write_sheet("decision_tree_path_detail", path_detail_frame)
 
     if decision_tree_funnel is not None:
