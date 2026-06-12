@@ -2356,14 +2356,25 @@ def build_decision_tree_path_detail_table(df: pd.DataFrame) -> pd.DataFrame:
 
     detail_df = pd.DataFrame(rows)
     if not detail_df.empty:
+        rounded_export_keys = {
+            "monthsuntildue",
+            "monthssincestart",
+            "intervalhalfmonths",
+            "monthsfromgolive",
+        }
+        duplicate_export_columns = {standort_col} if standort_col else set()
         source_export = working.drop(
             columns=[
                 col
                 for col in working.columns
                 if normalize_name_for_match(col) in label_export_exclude_keys
+                or col in duplicate_export_columns
             ],
             errors="ignore",
         ).copy()
+        for col in source_export.columns:
+            if normalize_name_for_match(col) in rounded_export_keys:
+                source_export[col] = pd.to_numeric(source_export[col], errors="coerce").round(2)
         if "row_index" in source_export.columns:
             source_export = source_export.rename(columns={"row_index": "original_row_index"})
         source_export.insert(0, "row_index", row_index_values)
