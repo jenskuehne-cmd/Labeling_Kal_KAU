@@ -2231,6 +2231,8 @@ def build_decision_tree_path_detail_table(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     working = add_derived_time_columns(df)
+    label_export_exclude_keys = {"labelprio", "labelpaket", "labelpacket"}
+    row_index_values: list[int] = []
     group_col = next((c for c in ["Gebäude / MU", "Gebaeude / MU", "Standort", "Location", "Site"] if c in working.columns), None)
     asset_col = next((c for c in ["Asset ID", "AssetID", "Asset_Id"] if c in working.columns), None)
     standort_col = next((c for c in ["Standort", "Location", "Site"] if c in working.columns), None)
@@ -2244,7 +2246,9 @@ def build_decision_tree_path_detail_table(df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     prio_sort = {"excluded": 0, "P1": 1, "P2": 2, "P2A": 3, "P3": 4, "P4": 5, "P5": 6, "P6": 7}
 
-    for idx, row in working.iterrows():
+    for row_pos, (idx, row) in enumerate(working.iterrows()):
+        row_index = int(idx) if isinstance(idx, (int, np.integer)) else row_pos
+        row_index_values.append(row_index)
         qc_status = text_value(row.get("qc_scope_status"))
         legacy_class = text_value(row.get("ms_legacy_class"))
         time_class = text_value(row.get("time_class"))
@@ -2329,7 +2333,7 @@ def build_decision_tree_path_detail_table(df: pd.DataFrame) -> pd.DataFrame:
         decision_path = " -> ".join(path_parts)
         rows.append(
             {
-                "row_index": int(idx),
+                "row_index": row_index,
                 "asset_id": asset_id,
                 "gebäude_mu": gebaeude_mu,
                 "standort": standort,
@@ -2352,6 +2356,23 @@ def build_decision_tree_path_detail_table(df: pd.DataFrame) -> pd.DataFrame:
 
     detail_df = pd.DataFrame(rows)
     if not detail_df.empty:
+        source_export = working.drop(
+            columns=[
+                col
+                for col in working.columns
+                if normalize_name_for_match(col) in label_export_exclude_keys
+            ],
+            errors="ignore",
+        ).copy()
+        if "row_index" in source_export.columns:
+            source_export = source_export.rename(columns={"row_index": "original_row_index"})
+        source_export.insert(0, "row_index", row_index_values)
+        extra_cols = [col for col in source_export.columns if col not in detail_df.columns]
+        if extra_cols:
+            detail_df = pd.concat(
+                [detail_df.reset_index(drop=True), source_export[extra_cols].reset_index(drop=True)],
+                axis=1,
+            )
         sort_cols = [c for c in ["path_sort", "final_prio", "gebäude_mu", "standort", "asset_id"] if c in detail_df.columns]
         detail_df = detail_df.sort_values(sort_cols, kind="stable").drop(columns=["path_sort"], errors="ignore")
     return detail_df
