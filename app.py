@@ -2362,7 +2362,11 @@ def build_decision_tree_path_detail_table(df: pd.DataFrame) -> pd.DataFrame:
             "monthsfromgolive",
         }
         helper_export_exclude_keys = {"intervalhalfmonths"}
-        duplicate_export_columns = {standort_col} if standort_col else set()
+        duplicate_export_columns = {
+            col
+            for col in [asset_col, group_col, standort_col, description_col]
+            if col
+        }
         source_export = working.drop(
             columns=[
                 col
