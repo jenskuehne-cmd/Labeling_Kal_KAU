@@ -2359,15 +2359,16 @@ def build_decision_tree_path_detail_table(df: pd.DataFrame) -> pd.DataFrame:
         rounded_export_keys = {
             "monthsuntildue",
             "monthssincestart",
-            "intervalhalfmonths",
             "monthsfromgolive",
         }
+        helper_export_exclude_keys = {"intervalhalfmonths"}
         duplicate_export_columns = {standort_col} if standort_col else set()
         source_export = working.drop(
             columns=[
                 col
                 for col in working.columns
                 if normalize_name_for_match(col) in label_export_exclude_keys
+                or normalize_name_for_match(col) in helper_export_exclude_keys
                 or col in duplicate_export_columns
             ],
             errors="ignore",
